@@ -1,7 +1,7 @@
 """AutoRepair central metering pilot. Python 3.11+, standard library only.
 Not a production billing or payment entitlement system. Bind loopback behind TLS.
 """
-import argparse, contextlib, hashlib, json, os, re, secrets, sqlite3
+import argparse, contextlib, hashlib, hmac, json, os, re, secrets, sqlite3
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -109,6 +109,17 @@ def handler(store):
                     size=int(self.headers.get('Content-Length','0'))
                     if not 0<size<=8000000:raise Invalid('payload size')
                     r=store.snapshot(token,json.loads(self.rfile.read(size)))
+                elif self.command=='POST' and self.path=='/v1/admin/provision':
+                    # Disabled unless ADMIN_TOKEN is set; exists only so hub tokens can be
+                    # issued on hosts with no shell access (e.g. a free-tier PaaS).
+                    admin=os.environ.get('ADMIN_TOKEN','')
+                    given=self.headers.get('X-Admin-Token','')
+                    if not admin or not hmac.compare_digest(given,admin):raise Unauthorized()
+                    size=int(self.headers.get('Content-Length','0'))
+                    if not 0<size<=4000:raise Invalid('payload size')
+                    body=json.loads(self.rfile.read(size))
+                    if not isinstance(body,dict):raise Invalid('expected an object')
+                    r={'hub_token':store.provision(body.get('account'),body.get('hub'),int(body.get('base',10000)),int(body.get('unit',100))),'mode':'pilot'}
                 else:return self.reply(404,{'error':'not_found'})
                 self.reply(200,r)
             except Unauthorized:self.reply(401,{'error':'unauthorized'})
