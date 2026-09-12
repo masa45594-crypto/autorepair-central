@@ -1,0 +1,47 @@
+name: AutoRepair acceptance
+on:
+  pull_request:
+    paths:
+      - "ci/**"
+      - "autorepair-ai-hosting-beta-*.zip"
+      - ".github/workflows/acceptance.yml"
+  workflow_dispatch:
+    inputs:
+      stripe_sandbox:
+        description: 'Run Stripe sandbox API tests (requires STRIPE_TEST_SECRET_KEY)'
+        type: boolean
+        default: false
+permissions:
+  contents: read
+jobs:
+  restore:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run real Docker + MySQL rehearsal
+        run: python3 ci/e2e.py
+      - name: Save test evidence only
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: restore-evidence
+          path: reports/
+          retention-days: 7
+  stripe:
+    if: ${{ inputs.stripe_sandbox }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Stripe sandbox success and decline
+        env:
+          STRIPE_TEST_SECRET_KEY: ${{ secrets.STRIPE_TEST_SECRET_KEY }}
+        run: python3 ci/stripe_sandbox.py
+      - name: Save sandbox evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stripe-evidence
+          path: reports/
+          retention-days: 7
