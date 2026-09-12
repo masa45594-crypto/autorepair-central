@@ -120,7 +120,7 @@ define('AAIHB_VAULT_DIR','/work/vault');define('AAIHB_PUBLIC_ROOT','/work/site')
         report['fixture_cleanup']=clean
         if not clean:report['status']='failed';report['stage']='fixture_cleanup'
         (REPORTS/'docker-e2e.json').write_text(json.dumps(report,indent=2)+'\n')
-        print(json.dumps({'status':report['status'],'stage':report.get('stage')}))
+        print(json.dumps(report))
     return 0 if report['status']=='passed' else 1
 
 if __name__=='__main__':sys.exit(main())
