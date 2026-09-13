@@ -82,6 +82,12 @@ define('AAIHB_VAULT_DIR','/work/vault');define('AAIHB_PUBLIC_ROOT','/work/site')
         report['stage']='real_same_site_restore'
         docker(['exec',php,'php','/ci/roundtrip.php'],timeout=300)
         report['same_site_restore']=json.loads((work/'roundtrip.json').read_text())
+        report['stage']='real_plugin_update_rollback'
+        docker(['exec',php,'php','/ci/rollback.php'],timeout=180)
+        report['plugin_update_rollback']=json.loads((work/'rollback.json').read_text())
+        rollback=report['plugin_update_rollback']
+        if not (rollback.get('pre_update_backup_created') and rollback.get('real_http_500_detected_and_rolled_back') and rollback.get('restored_plugin_files') and rollback.get('site_http_after_restore')==200 and rollback.get('database_preserved') and rollback.get('operation_history_saved')):
+            raise RuntimeError('plugin update rollback failed')
         # Test the shipped rehearsal runner against that REAL backup.
         runner_path=site/'wp-content/plugins/autorepair-ai-hosting-beta/restore-test/runner.py'
         spec=importlib.util.spec_from_file_location('shipped_runner',runner_path);runner=importlib.util.module_from_spec(spec);spec.loader.exec_module(runner)
