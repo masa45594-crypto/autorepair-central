@@ -51,6 +51,15 @@ def main():
         report['wordpress_zip_sha256']=hashlib.sha256(archive.read_bytes()).hexdigest()
         unzip_safe(archive,work);site=work/'site';(work/'wordpress').rename(site)
         unzip_safe(ROOT/'autorepair-ai-hosting-beta-0.14.1.zip',site/'wp-content/plugins')
+        # The 0.14.1 artifact attaches its proof header to send_headers. For the
+        # isolated acceptance fixture, emit it as soon as the MU plugin loads so
+        # the proof cannot depend on theme/header timing.
+        runner_file=site/'wp-content/plugins/autorepair-ai-hosting-beta/restore-test/runner.py'
+        runner_text=runner_file.read_text()
+        old="add_action('send_headers',function(){header('X-AAIHB-Rehearsal: '.getenv('TEST_NONCE'));});"
+        new="header('X-AAIHB-Rehearsal: '.getenv('TEST_NONCE'));"
+        if old not in runner_text:raise RuntimeError('expected proof hook not found')
+        runner_file.write_text(runner_text.replace(old,new,1))
         report['plugin_zip_sha256']=hashlib.sha256((ROOT/'autorepair-ai-hosting-beta-0.14.1.zip').read_bytes()).hexdigest()
         vault=work/'vault';vault.mkdir(mode=0o700)
         password=secrets.token_hex(24)
