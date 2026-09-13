@@ -8,8 +8,12 @@ if(!$row){echo json_encode(['contact_form_7_http_and_mail'=>false,'reason'=>'no_
 $form_id=(int)$row[0];
 $marker='aaihb-cf7-'.bin2hex(random_bytes(12));
 $fields=['_wpcf7'=>$form_id,'_wpcf7_version'=>'5.9','_wpcf7_locale'=>'en_US','_wpcf7_unit_tag'=>'wpcf7-f'.$form_id.'-p0-o1','_wpcf7_container_post'=>0,'your-name'=>'Rehearsal','your-email'=>'fixture@example.invalid','your-subject'=>$marker,'your-message'=>$marker];
-$body=http_build_query($fields);
-$ctx=stream_context_create(['http'=>['method'=>'POST','header'=>"Content-Type: application/x-www-form-urlencoded\r\n",'content'=>$body,'timeout'=>30,'follow_location'=>0,'ignore_errors'=>true]]);
+// The REST feedback endpoint only accepts multipart/form-data (the same as the real browser widget).
+$boundary='AaihbBoundary'.bin2hex(random_bytes(12));
+$body='';
+foreach($fields as $name=>$value){$body.="--$boundary\r\nContent-Disposition: form-data; name=\"$name\"\r\n\r\n$value\r\n";}
+$body.="--$boundary--\r\n";
+$ctx=stream_context_create(['http'=>['method'=>'POST','header'=>"Content-Type: multipart/form-data; boundary=$boundary\r\n",'content'=>$body,'timeout'=>30,'follow_location'=>0,'ignore_errors'=>true]]);
 $response=file_get_contents('http://127.0.0.1:8080/?rest_route=/contact-form-7/v1/contact-forms/'.$form_id.'/feedback',false,$ctx);
 $headers=$http_response_header??[];
 $status=0;$match=[];
