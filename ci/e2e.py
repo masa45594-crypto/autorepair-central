@@ -95,8 +95,11 @@ define('AAIHB_VAULT_DIR','/work/vault');define('AAIHB_PUBLIC_ROOT','/work/site')
                     diag = "$b=file_get_contents('http://127.0.0.1:8080/');echo json_encode(['headers'=>array_map(fn($h)=>explode(':',$h,2)[0],$http_response_header),'mu_file'=>is_file('/site/wp-content/mu-plugins/aaihb-test.php'),'nonce_available'=>strlen(getenv('TEST_NONCE'))>0,'install_page'=>strpos($b,'Installation')!==false]);"
                     report['homepage_diagnostics']=json.loads(actual_command(['exec',args[1],'php','-r',diag]))
                 if page.get('homepage') is True and page.get('wordpress') is True:
-                    proof=actual_command(['exec','-i',args[1],'php'],(ROOT/'ci/comment.php').read_bytes(),60)
-                    form_proof.update(json.loads(proof))
+                    try:
+                        proof=actual_command(['exec','-i',args[1],'php'],(ROOT/'ci/comment.php').read_bytes(),60)
+                        form_proof.update(json.loads(proof))
+                    except subprocess.CalledProcessError as error:
+                        form_proof.update({'comment_form_http_and_database':False,'exit_code':error.returncode})
             return output
         runner.command=observed_command
         request={'dir':str(point),'manifest':json.loads((point/'manifest.json').read_text()),'nonce':secrets.token_hex(24)}
