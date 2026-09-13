@@ -37,6 +37,8 @@ if(class_exists('WC_Install')){
     $product->set_status('publish');
     $product->save();
 }
+// Fixed test-only key: this is a disposable, isolated fixture, not a real deployment.
+update_option('aaihb_partner_settings',['enabled'=>true,'hash'=>hash('sha256','aaihb-ci-fixture-partner-key')],false);
 update_option('default_comment_status','open');update_option('comment_registration',0);update_option('comment_moderation',1);update_option('require_name_email',1);update_option('comments_notify',0);update_option('moderation_notify',0);
 wp_update_post(['ID'=>1,'post_status'=>'publish','comment_status'=>'open']);
 file_put_contents('/work/fixture-ready.json',json_encode(['post_id'=>1]));
