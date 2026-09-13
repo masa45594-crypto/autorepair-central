@@ -16,7 +16,7 @@ file_put_contents(ABSPATH.'aaihb-rollback-health.php',"<?php\n\$fixture=__DIR__.
 activate_plugin('autorepair-ai-hosting-beta/autorepair-ai-hosting-beta.php');
 activate_plugin('aaihb-rollback-fixture/aaihb-rollback-fixture.php');
 activate_plugin('contact-form-7/wp-contact-form-7.php');
-$wc_activation_result=activate_plugin('woocommerce/woocommerce.php');
+activate_plugin('woocommerce/woocommerce.php');
 // Newly-activated plugins' init-time setup (CPT registration, etc.) hasn't run yet in this request.
 do_action('plugins_loaded');do_action('init');
 AAIHB_Beta::upgrade();
@@ -28,7 +28,6 @@ if(class_exists('WPCF7_ContactForm')){
     $cf7->set_title('AAIHB CI Fixture');
     $cf7->save();
 }
-echo json_encode(['wc_activation_error'=>is_wp_error($wc_activation_result)?$wc_activation_result->get_error_codes():null,'wc_activation_message'=>is_wp_error($wc_activation_result)?$wc_activation_result->get_error_message():null,'wc_file_exists'=>is_file(WP_PLUGIN_DIR.'/woocommerce/woocommerce.php'),'wc_active_plugins'=>get_option('active_plugins'),'wc_install_exists'=>class_exists('WC_Install')]);
 if(class_exists('WC_Install')){
     WC_Install::install();
     $product=new WC_Product_Simple();

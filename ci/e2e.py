@@ -82,8 +82,7 @@ define('AAIHB_VAULT_DIR','/work/vault');define('AAIHB_PUBLIC_ROOT','/work/site')
         docker(['run','-d','--name',php,'--network','none','--user',str(os.getuid())+':'+str(os.getgid()),'--mount','type=bind,src='+str(work)+',dst=/work',
                 '--mount','type=bind,src='+str(ROOT/'ci')+',dst=/ci,readonly','--mount','type=volume,src='+socket+',dst=/socket,readonly',
                 '-e','TEST_DB_PASSWORD='+password,'-e','AAIHB_CI=1',IMAGE,'php','-S','0.0.0.0:8080','-t','/work/site'])
-        setup_out=docker(['exec',php,'php','/ci/setup.php'],timeout=180)
-        if setup_out.strip():report['setup_debug']=setup_out.decode('utf-8','replace')[:500]
+        docker(['exec',php,'php','/ci/setup.php'],timeout=180)
         docker(['exec',php,'php','-r',"require '/work/site/wp-load.php';update_option('aaihb_fixture_roundtrip','original');"],timeout=60)
         report['stage']='real_backup'
         docker(['exec',php,'php','/ci/backup.php'],timeout=300)
