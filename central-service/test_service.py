@@ -1,7 +1,7 @@
-import json,tempfile,unittest,threading,urllib.request,urllib.error
+import json,tempfile,unittest,threading,urllib.request,urllib.error,time,hmac,hashlib
 from pathlib import Path
 from http.server import HTTPServer
-from service import Store,Invalid,Conflict,Unauthorized,handler,digest
+from service import Store,Invalid,Conflict,Unauthorized,handler,digest,verify_stripe_signature
 from stripe_draft import plan,send
 class Tests(unittest.TestCase):
  def setUp(self):
@@ -45,6 +45,15 @@ class Tests(unittest.TestCase):
   send(u,'cus_test',self.tmp.name,'sk_test_fake',transport);send(u,'cus_test',self.tmp.name,'sk_test_fake',transport);self.assertEqual(len(calls),2);self.assertEqual(calls[1][1]['invoice'],'in_test')
   u['peak']=3;u['amount_yen']=10300
   with self.assertRaises(ValueError):send(u,'cus_test',self.tmp.name,'sk_test_fake',transport)
+ def test_webhook_signature(self):
+  raw=b'{"type":"test"}';stamp=str(int(time.time()));signature=hmac.new(b'whsec_test',stamp.encode()+b'.'+raw,hashlib.sha256).hexdigest()
+  self.assertTrue(verify_stripe_signature(raw,'t='+stamp+',v1='+signature,'whsec_test'))
+  self.assertFalse(verify_stripe_signature(raw,'t='+stamp+',v1=invalid','whsec_test'))
+ def test_stripe_state(self):
+  self.push(self.a,1,self.ids)
+  state=self.s.stripe_save('a',customer='cus_test',subscription='sub_test',status='active',now=self.now)
+  self.assertEqual(state['subscription_id'],'sub_test')
+  self.assertEqual(self.s.stripe_peak('a',self.now),4)
  def test_http(self):
   server=HTTPServer(('127.0.0.1',0),handler(self.s));thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
   try:
