@@ -211,6 +211,13 @@ def handler(store):
                 raise StripeError('Stripe returned an invalid Checkout URL')
             self.reply(200,{'mode':'test','checkout_url':checkout_url})
 
+        def stripe_hub_status(self,token):
+            """Return only the authenticated hub account's non-secret test status."""
+            with store.db() as c:
+                hub=store.auth(c,token);account=hub['account']
+            state=store.stripe_state(account)
+            self.reply(200,{'mode':'test','subscription_status':state['status'],'updated':state['updated']})
+
         def stripe_sync(self,body):
             self.admin_allowed();cfg=stripe_config()
             if not cfg['configured']: raise StripeError('Stripe test configuration is incomplete')
@@ -251,6 +258,8 @@ def handler(store):
                     return self.stripe_checkout(self.body())
                 elif self.command=='POST' and self.path=='/v1/stripe/test-checkout':
                     return self.stripe_hub_checkout(token,self.body())
+                elif self.command=='GET' and self.path=='/v1/stripe/test-status':
+                    return self.stripe_hub_status(token)
                 elif self.command=='POST' and self.path=='/v1/admin/stripe/sync':
                     return self.stripe_sync(self.body())
                 elif self.command=='POST' and self.path=='/v1/stripe/webhook':
