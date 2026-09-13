@@ -12,6 +12,7 @@ wp_install('AutoRepair disposable fixture','fixture_admin','fixture@example.inva
 $rollback_dir=WP_PLUGIN_DIR.'/aaihb-rollback-fixture';
 if(!is_dir($rollback_dir))mkdir($rollback_dir,0755,true);
 file_put_contents($rollback_dir.'/aaihb-rollback-fixture.php',"<?php\n/* Plugin Name: AAIHB Rollback Fixture */\nadd_action('init',function(){ update_option('aaihb_rollback_fixture_loaded','v1',false); });\n");
+file_put_contents(ABSPATH.'aaihb-rollback-health.php',"<?php\n$fixture=__DIR__.'/wp-content/plugins/aaihb-rollback-fixture/aaihb-rollback-fixture.php';\n$source=@file_get_contents($fixture);\nif(is_string($source)&&strpos($source,'aaihb_broken_fixture')!==false){http_response_code(500);echo 'fixture update unhealthy';exit;}\nhttp_response_code(200);echo 'fixture update healthy';\n");
 activate_plugin('autorepair-ai-hosting-beta/autorepair-ai-hosting-beta.php');
 activate_plugin('aaihb-rollback-fixture/aaihb-rollback-fixture.php');
 AAIHB_Beta::upgrade();
