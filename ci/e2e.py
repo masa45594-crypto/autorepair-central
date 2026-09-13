@@ -17,7 +17,7 @@ import zipfile
 
 ROOT=Path(__file__).resolve().parents[1]
 REPORTS=ROOT/'reports'
-IMAGE='aaihb-restore-test:0.14.1'
+IMAGE='aaihb-restore-test:0.14.2'
 DB_IMAGE='mysql:8.4'
 
 def docker(args,data=None,timeout=120):
@@ -50,17 +50,8 @@ def main():
         with urllib.request.urlopen('https://wordpress.org/wordpress-6.8.zip',timeout=120) as src,archive.open('wb') as dst:shutil.copyfileobj(src,dst)
         report['wordpress_zip_sha256']=hashlib.sha256(archive.read_bytes()).hexdigest()
         unzip_safe(archive,work);site=work/'site';(work/'wordpress').rename(site)
-        unzip_safe(ROOT/'autorepair-ai-hosting-beta-0.14.1.zip',site/'wp-content/plugins')
-        # The 0.14.1 artifact attaches its proof header to send_headers. For the
-        # isolated acceptance fixture, emit it as soon as the MU plugin loads so
-        # the proof cannot depend on theme/header timing.
-        runner_file=site/'wp-content/plugins/autorepair-ai-hosting-beta/restore-test/runner.py'
-        runner_text=runner_file.read_text()
-        old="add_action('send_headers',function(){header('X-AAIHB-Rehearsal: '.getenv('TEST_NONCE'));});"
-        new="header('X-AAIHB-Rehearsal: '.getenv('TEST_NONCE'));"
-        if old not in runner_text:raise RuntimeError('expected proof hook not found')
-        runner_file.write_text(runner_text.replace(old,new,1))
-        report['plugin_zip_sha256']=hashlib.sha256((ROOT/'autorepair-ai-hosting-beta-0.14.1.zip').read_bytes()).hexdigest()
+        unzip_safe(ROOT/'autorepair-ai-hosting-beta-0.14.2.zip',site/'wp-content/plugins')
+        report['plugin_zip_sha256']=hashlib.sha256((ROOT/'autorepair-ai-hosting-beta-0.14.2.zip').read_bytes()).hexdigest()
         vault=work/'vault';vault.mkdir(mode=0o700)
         password=secrets.token_hex(24)
         config="""<?php
