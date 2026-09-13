@@ -1,16 +1,54 @@
 """AutoRepair central metering pilot. Python 3.11+, standard library only.
 Not a production billing or payment entitlement system. Bind loopback behind TLS.
 """
-import argparse, contextlib, hashlib, hmac, json, os, re, secrets, sqlite3
+import argparse, contextlib, hashlib, hmac, json, os, re, secrets, sqlite3, urllib.error, urllib.parse, urllib.request
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 class Invalid(Exception): pass
 class Conflict(Exception): pass
 class Unauthorized(Exception): pass
+class StripeError(Exception): pass
 
 def utc(): return datetime.now(timezone.utc).isoformat()
 def digest(x): return hashlib.sha256(x.encode()).hexdigest()
+
+def stripe_config():
+    key=os.environ.get('STRIPE_SECRET_KEY','')
+    price=os.environ.get('STRIPE_PRICE_ID','')
+    webhook=os.environ.get('STRIPE_WEBHOOK_SECRET','')
+    return {'configured':bool(key.startswith('sk_test_') and price.startswith('price_') and webhook.startswith('whsec_')),
+            'key':key,'price':price,'webhook':webhook}
+
+def stripe_request(method,path,data=None):
+    cfg=stripe_config()
+    if not cfg['key'].startswith('sk_test_'): raise StripeError('Stripe test secret key is not configured')
+    body=None
+    headers={'Authorization':'Bearer '+cfg['key'],'User-Agent':'AutoRepair-Central/stripe-test'}
+    if data is not None:
+        body=urllib.parse.urlencode(data).encode()
+        headers['Content-Type']='application/x-www-form-urlencoded'
+    request=urllib.request.Request('https://api.stripe.com/v1'+path,data=body,headers=headers,method=method)
+    try:
+        with urllib.request.urlopen(request,timeout=20) as response:
+            decoded=json.loads(response.read())
+            if not isinstance(decoded,dict): raise StripeError('invalid Stripe response')
+            return decoded
+    except (urllib.error.URLError, urllib.error.HTTPError, ValueError):
+        raise StripeError('Stripe request failed')
+
+def verify_stripe_signature(raw,header,secret):
+    if not isinstance(raw,bytes) or not isinstance(header,str) or not secret.startswith('whsec_'): return False
+    parts={}
+    for part in header.split(','):
+        key,sep,value=part.partition('=')
+        if sep: parts.setdefault(key,[]).append(value)
+    try: stamp=int(parts['t'][0])
+    except (KeyError,ValueError): return False
+    if abs(datetime.now(timezone.utc).timestamp()-stamp)>300: return False
+    signed=str(stamp).encode()+b'.'+raw
+    expected=hmac.new(secret.encode(),signed,hashlib.sha256).hexdigest()
+    return any(hmac.compare_digest(expected,value) for value in parts.get('v1',[]))
 
 class Store:
     def __init__(self, path):
@@ -22,6 +60,7 @@ class Store:
             CREATE TABLE IF NOT EXISTS sites(hub TEXT NOT NULL REFERENCES hubs(id), site TEXT NOT NULL, PRIMARY KEY(hub,site));
             CREATE TABLE IF NOT EXISTS months(account TEXT NOT NULL, month TEXT NOT NULL, peak INTEGER NOT NULL, base INTEGER NOT NULL, unit INTEGER NOT NULL, PRIMARY KEY(account,month));
             CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY, hub TEXT NOT NULL, sequence INTEGER NOT NULL, digest TEXT NOT NULL, received TEXT NOT NULL, count INTEGER NOT NULL, UNIQUE(hub,sequence));
+            CREATE TABLE IF NOT EXISTS stripe_accounts(account TEXT PRIMARY KEY REFERENCES accounts(id), customer_id TEXT NOT NULL DEFAULT '', subscription_id TEXT NOT NULL DEFAULT '', item_id TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT '', updated TEXT NOT NULL DEFAULT '');
             ''')
     @contextlib.contextmanager
     def db(self):
@@ -83,6 +122,31 @@ class Store:
             c.execute('INSERT INTO events(hub,sequence,digest,received,count) VALUES(?,?,?,?,?)',(h['id'],seq,body,now,len(sites)))
             h=c.execute('SELECT * FROM hubs WHERE id=?',(h['id'],)).fetchone()
             return self.result(c,h,now)
+    def stripe_save(self,account,customer='',subscription='',item='',status='',now=None):
+        if not re.fullmatch(r'[a-z0-9_-]{1,64}',str(account)): raise Invalid('invalid account ID')
+        now=now or utc()
+        with self.db() as c:
+            if not c.execute('SELECT 1 FROM accounts WHERE id=?',(account,)).fetchone(): raise Invalid('unknown account')
+            old=c.execute('SELECT * FROM stripe_accounts WHERE account=?',(account,)).fetchone()
+            customer=customer or (old['customer_id'] if old else '')
+            subscription=subscription or (old['subscription_id'] if old else '')
+            item=item or (old['item_id'] if old else '')
+            status=status or (old['status'] if old else '')
+            c.execute('INSERT INTO stripe_accounts(account,customer_id,subscription_id,item_id,status,updated) VALUES(?,?,?,?,?,?) ON CONFLICT(account) DO UPDATE SET customer_id=excluded.customer_id,subscription_id=excluded.subscription_id,item_id=excluded.item_id,status=excluded.status,updated=excluded.updated',(account,customer,subscription,item,status,now))
+            return dict(c.execute('SELECT account,customer_id,subscription_id,item_id,status,updated FROM stripe_accounts WHERE account=?',(account,)).fetchone())
+
+    def stripe_state(self,account):
+        with self.db() as c:
+            row=c.execute('SELECT account,customer_id,subscription_id,item_id,status,updated FROM stripe_accounts WHERE account=?',(account,)).fetchone()
+            return dict(row) if row else {'account':account,'customer_id':'','subscription_id':'','item_id':'','status':'','updated':''}
+
+    def stripe_peak(self,account,now=None):
+        now=now or utc()
+        with self.db() as c:
+            row=c.execute('SELECT peak FROM months WHERE account=? AND month=?',(account,now[:7])).fetchone()
+            if not row: raise Invalid('no observed usage for period')
+            return int(row['peak'])
+
     def export(self,account,month):
         if not re.fullmatch(r'\d{4}-(0[1-9]|1[0-2])',month):raise Invalid('invalid month')
         with self.db() as c:
@@ -99,6 +163,53 @@ def handler(store):
         def reply(self,code,data):
             body=json.dumps(data,separators=(',',':')).encode();self.send_response(code)
             self.send_header('Content-Type','application/json');self.send_header('Cache-Control','no-store');self.send_header('Content-Length',str(len(body)));self.end_headers();self.wfile.write(body)
+        def admin_allowed(self):
+            admin=os.environ.get('ADMIN_TOKEN','')
+            given=self.headers.get('X-Admin-Token','')
+            if not admin or not hmac.compare_digest(given,admin): raise Unauthorized()
+
+        def body(self,limit=4000):
+            size=int(self.headers.get('Content-Length','0'))
+            if not 0<size<=limit: raise Invalid('payload size')
+            data=json.loads(self.rfile.read(size))
+            if not isinstance(data,dict): raise Invalid('expected an object')
+            return data
+
+        def stripe_checkout(self,body):
+            self.admin_allowed();cfg=stripe_config()
+            if not cfg['configured']: raise StripeError('Stripe test configuration is incomplete')
+            account=body.get('account','');success=body.get('success_url','');cancel=body.get('cancel_url','')
+            if not re.fullmatch(r'[a-z0-9_-]{1,64}',str(account)): raise Invalid('invalid account')
+            for url in (success,cancel):
+                p=urllib.parse.urlparse(url)
+                if p.scheme!='https' or not p.netloc or p.username or p.password or p.fragment: raise Invalid('invalid redirect URL')
+            customer=stripe_request('POST','/customers',{'metadata[account]':account})
+            session=stripe_request('POST','/checkout/sessions',{'mode':'subscription','customer':customer['id'],'success_url':success,'cancel_url':cancel,'line_items[0][price]':cfg['price'],'line_items[0][quantity]':'1','metadata[account]':account,'subscription_data[metadata][account]':account})
+            self.reply(200,{'mode':'test','checkout_url':session.get('url','')})
+
+        def stripe_sync(self,body):
+            self.admin_allowed();cfg=stripe_config()
+            if not cfg['configured']: raise StripeError('Stripe test configuration is incomplete')
+            account=body.get('account','');state=store.stripe_state(account)
+            if not state['subscription_id']: raise Invalid('no Stripe subscription for account')
+            peak=store.stripe_peak(account);subscription=stripe_request('GET','/subscriptions/'+urllib.parse.quote(state['subscription_id'],safe=''))
+            items=((subscription.get('items') or {}).get('data') or []);item=next((x for x in items if ((x.get('price') or {}).get('id')==cfg['price'])),None)
+            if not item: raise StripeError('subscription does not contain configured price')
+            updated=stripe_request('POST','/subscription_items/'+urllib.parse.quote(item['id'],safe=''),{'quantity':str(peak),'proration_behavior':'none'})
+            store.stripe_save(account,customer=subscription.get('customer',''),subscription=subscription.get('id',''),item=updated.get('id',''),status=subscription.get('status',''))
+            self.reply(200,{'mode':'test','account':account,'peak':peak,'quantity':int(updated.get('quantity',0)),'subscription_status':subscription.get('status','')})
+
+        def stripe_webhook(self):
+            cfg=stripe_config();size=int(self.headers.get('Content-Length','0'))
+            if not 0<size<=1000000: raise Invalid('payload size')
+            raw=self.rfile.read(size)
+            if not verify_stripe_signature(raw,self.headers.get('Stripe-Signature',''),cfg['webhook']): raise Unauthorized()
+            event=json.loads(raw);obj=((event.get('data') or {}).get('object') or {});metadata=obj.get('metadata') or {};account=metadata.get('account','');etype=event.get('type','')
+            if account and re.fullmatch(r'[a-z0-9_-]{1,64}',str(account)):
+                subscription=obj.get('subscription','') if etype=='checkout.session.completed' else obj.get('id','')
+                store.stripe_save(account,customer=obj.get('customer',''),subscription=subscription,status=obj.get('status','active' if etype=='checkout.session.completed' else ''))
+            self.reply(200,{'received':True})
+
         def dispatch(self):
             try:
                 auth=self.headers.get('Authorization','');token=auth[7:] if auth.startswith('Bearer ') else ''
@@ -110,20 +221,21 @@ def handler(store):
                     if not 0<size<=8000000:raise Invalid('payload size')
                     r=store.snapshot(token,json.loads(self.rfile.read(size)))
                 elif self.command=='POST' and self.path=='/v1/admin/provision':
-                    # Disabled unless ADMIN_TOKEN is set; exists only so hub tokens can be
-                    # issued on hosts with no shell access (e.g. a free-tier PaaS).
-                    admin=os.environ.get('ADMIN_TOKEN','')
-                    given=self.headers.get('X-Admin-Token','')
-                    if not admin or not hmac.compare_digest(given,admin):raise Unauthorized()
-                    size=int(self.headers.get('Content-Length','0'))
-                    if not 0<size<=4000:raise Invalid('payload size')
-                    body=json.loads(self.rfile.read(size))
-                    if not isinstance(body,dict):raise Invalid('expected an object')
+                    self.admin_allowed();body=self.body()
                     r={'hub_token':store.provision(body.get('account'),body.get('hub'),int(body.get('base',10000)),int(body.get('unit',100))),'mode':'pilot'}
+                elif self.command=='POST' and self.path=='/v1/admin/stripe/checkout':
+                    return self.stripe_checkout(self.body())
+                elif self.command=='POST' and self.path=='/v1/admin/stripe/sync':
+                    return self.stripe_sync(self.body())
+                elif self.command=='POST' and self.path=='/v1/stripe/webhook':
+                    return self.stripe_webhook()
+                elif self.command=='GET' and self.path=='/v1/admin/stripe/status':
+                    self.admin_allowed();cfg=stripe_config();return self.reply(200,{'mode':'test','configured':cfg['configured'],'price_configured':cfg['price'].startswith('price_')})
                 else:return self.reply(404,{'error':'not_found'})
                 self.reply(200,r)
             except Unauthorized:self.reply(401,{'error':'unauthorized'})
             except Conflict:self.reply(409,{'error':'sequence_conflict'})
+            except StripeError:self.reply(503,{'error':'stripe_unavailable'})
             except (Invalid,ValueError,UnicodeError):self.reply(400,{'error':'invalid_request'})
             except Exception:self.reply(503,{'error':'temporarily_unavailable'})
         def do_GET(self):self.dispatch()
