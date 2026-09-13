@@ -128,6 +128,11 @@ define('AAIHB_VAULT_DIR','/work/vault');define('AAIHB_PUBLIC_ROOT','/work/site')
                         form_proof.update(json.loads(wc_proof))
                     except subprocess.CalledProcessError as error:
                         form_proof.update({'woocommerce_add_to_cart':False,'wc_exit_code':error.returncode})
+                    try:
+                        ext_proof=actual_command(['exec','-i',args[1],'php'],(ROOT/'ci/external_integration.php').read_bytes(),60)
+                        form_proof.update(json.loads(ext_proof))
+                    except subprocess.CalledProcessError as error:
+                        form_proof.update({'external_api_reachable':False,'ext_exit_code':error.returncode})
             return output
         runner.command=observed_command
         request={'dir':str(point),'manifest':json.loads((point/'manifest.json').read_text()),'nonce':secrets.token_hex(24)}
@@ -135,7 +140,8 @@ define('AAIHB_VAULT_DIR','/work/vault');define('AAIHB_PUBLIC_ROOT','/work/site')
         outcome=runner.execute(request);outcome.pop('nonce',None);report['rehearsal']=outcome;report['wordpress_comment_form']=form_proof
         report['custom_forms']={'contact_form_7':form_proof.get('contact_form_7_http_and_mail') is True}
         report['purchase_and_license']={'woocommerce_add_to_cart':form_proof.get('woocommerce_add_to_cart') is True}
-        if outcome['status']!='passed' or form_proof.get('comment_form_http_and_database') is not True or form_proof.get('contact_form_7_http_and_mail') is not True or form_proof.get('woocommerce_add_to_cart') is not True:raise RuntimeError('rehearsal or form failed')
+        report['external_integration']={'partner_api':form_proof.get('external_api_reachable') is True}
+        if outcome['status']!='passed' or form_proof.get('comment_form_http_and_database') is not True or form_proof.get('contact_form_7_http_and_mail') is not True or form_proof.get('woocommerce_add_to_cart') is not True or form_proof.get('external_api_reachable') is not True:raise RuntimeError('rehearsal or form failed')
         report['stage']='corrupt_backup_rejection'
         corrupt=work/'corrupt';shutil.copytree(point,corrupt);(corrupt/'files.zip').write_bytes(b'invalid fixture')
         negative=runner.execute({**request,'dir':str(corrupt)});report['corrupt_backup_rejected']=negative['status']=='failed'
