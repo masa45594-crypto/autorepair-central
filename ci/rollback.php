@@ -8,7 +8,7 @@ try {
  if(!is_plugin_active($plugin)||!is_file($path))throw new RuntimeException('fixture');
  $stage='pre_update_backup';update_option('aaihb_guard_enabled',true,false);update_option('aaihb_rollback_db_marker','before-update',false);
  if(AAIHB_PluginGuard::before(true,['plugin'=>$plugin])!==true)throw new RuntimeException('backup');
- $stage='broken_update';file_put_contents($path,"<?php\n/* Plugin Name: AAIHB Rollback Fixture */\nadd_action('init',function(){ aaihb_intentional_missing_function(); });\n");
+ $stage='broken_update';file_put_contents($path,"<?php\n/* Plugin Name: AAIHB Rollback Fixture */\nadd_action('init',function(){ aaihb_intentional_missing_function(); });\n");clearstatcache(true,$path);sleep(3);
  $stage='rollback_detection';AAIHB_PluginGuard::after(null,['type'=>'plugin','action'=>'update','plugins'=>[$plugin]]);
  $stage='post_restore_check';$last=get_option('aaihb_guard_last',[]);$source=file_get_contents($path);$response=wp_remote_get(home_url('/'),['timeout'=>15,'redirection'=>0,'headers'=>['Cache-Control'=>'no-cache']]);$code=is_wp_error($response)?0:(int)wp_remote_retrieve_response_code($response);
  $restored=strpos($source,'aaihb_rollback_fixture_loaded')!==false && strpos($source,"'v1'")!==false && strpos($source,'aaihb_intentional_missing_function')===false;$history=isset($last['id'],$last['plugin'],$last['message']) && $last['plugin']===$plugin && strpos($last['message'],'戻しました')!==false;$database=get_option('aaihb_rollback_db_marker')==='before-update';
