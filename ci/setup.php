@@ -20,12 +20,12 @@ activate_plugin('contact-form-7/wp-contact-form-7.php');
 do_action('plugins_loaded');do_action('init');
 AAIHB_Beta::upgrade();
 if(class_exists('WPCF7_ContactForm')){
+    // The form itself is regular post/postmeta data and survives backup/restore normally.
+    // Mail interception for the clone is handled by restore-test/runner.py's own fixture
+    // mu-plugin, since it replaces wp-content/mu-plugins wholesale when preparing a clone.
     $cf7=WPCF7_ContactForm::get_template();
     $cf7->set_title('AAIHB CI Fixture');
     $cf7->save();
-    $mu_dir=WP_CONTENT_DIR.'/mu-plugins';
-    if(!is_dir($mu_dir))mkdir($mu_dir,0755,true);
-    file_put_contents($mu_dir.'/aaihb-cf7-mail-intercept.php',"<?php\n// Disposable fixture only: short-circuits real mail delivery and records the subject for acceptance checks.\nadd_filter('pre_wp_mail',function(\$null,\$atts){update_option('aaihb_cf7_mail_marker',(string)(\$atts['subject']??''),false);return true;},10,2);\nadd_filter('wpcf7_spam',function(\$spam,\$submission){if(\$spam&&method_exists(\$submission,'spam_log')){update_option('aaihb_cf7_spam_log',json_encode(\$submission->spam_log()),false);}return \$spam;},20,2);\n// This fixture proves the real submit-and-mail path, not CF7's own spam heuristics; skip them here only.\nadd_filter('wpcf7_skip_spam_check','__return_true');\n");
 }
 update_option('default_comment_status','open');update_option('comment_registration',0);update_option('comment_moderation',1);update_option('require_name_email',1);update_option('comments_notify',0);update_option('moderation_notify',0);
 wp_update_post(['ID'=>1,'post_status'=>'publish','comment_status'=>'open']);
