@@ -56,6 +56,10 @@ def main():
         with urllib.request.urlopen('https://downloads.wordpress.org/plugin/contact-form-7.latest-stable.zip',timeout=120) as src,cf7_archive.open('wb') as dst:shutil.copyfileobj(src,dst)
         unzip_safe(cf7_archive,site/'wp-content/plugins')
         report['contact_form_7_zip_sha256']=hashlib.sha256(cf7_archive.read_bytes()).hexdigest()
+        wc_archive=work/'woocommerce.zip'
+        with urllib.request.urlopen('https://downloads.wordpress.org/plugin/woocommerce.latest-stable.zip',timeout=180) as src,wc_archive.open('wb') as dst:shutil.copyfileobj(src,dst)
+        unzip_safe(wc_archive,site/'wp-content/plugins')
+        report['woocommerce_zip_sha256']=hashlib.sha256(wc_archive.read_bytes()).hexdigest()
         vault=work/'vault';vault.mkdir(mode=0o700)
         password=secrets.token_hex(24)
         config="""<?php
@@ -119,13 +123,19 @@ define('AAIHB_VAULT_DIR','/work/vault');define('AAIHB_PUBLIC_ROOT','/work/site')
                         form_proof.update(json.loads(cf7_proof))
                     except subprocess.CalledProcessError as error:
                         form_proof.update({'contact_form_7_http_and_mail':False,'cf7_exit_code':error.returncode})
+                    try:
+                        wc_proof=actual_command(['exec','-i',args[1],'php'],(ROOT/'ci/woocommerce.php').read_bytes(),60)
+                        form_proof.update(json.loads(wc_proof))
+                    except subprocess.CalledProcessError as error:
+                        form_proof.update({'woocommerce_add_to_cart':False,'wc_exit_code':error.returncode})
             return output
         runner.command=observed_command
         request={'dir':str(point),'manifest':json.loads((point/'manifest.json').read_text()),'nonce':secrets.token_hex(24)}
         report['stage']='real_clone_rehearsal'
         outcome=runner.execute(request);outcome.pop('nonce',None);report['rehearsal']=outcome;report['wordpress_comment_form']=form_proof
         report['custom_forms']={'contact_form_7':form_proof.get('contact_form_7_http_and_mail') is True}
-        if outcome['status']!='passed' or form_proof.get('comment_form_http_and_database') is not True or form_proof.get('contact_form_7_http_and_mail') is not True:raise RuntimeError('rehearsal or form failed')
+        report['purchase_and_license']={'woocommerce_add_to_cart':form_proof.get('woocommerce_add_to_cart') is True}
+        if outcome['status']!='passed' or form_proof.get('comment_form_http_and_database') is not True or form_proof.get('contact_form_7_http_and_mail') is not True or form_proof.get('woocommerce_add_to_cart') is not True:raise RuntimeError('rehearsal or form failed')
         report['stage']='corrupt_backup_rejection'
         corrupt=work/'corrupt';shutil.copytree(point,corrupt);(corrupt/'files.zip').write_bytes(b'invalid fixture')
         negative=runner.execute({**request,'dir':str(corrupt)});report['corrupt_backup_rejected']=negative['status']=='failed'
