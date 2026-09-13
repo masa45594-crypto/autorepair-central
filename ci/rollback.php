@@ -6,6 +6,7 @@ try {
  require '/work/site/wp-load.php';
  $plugin='aaihb-rollback-fixture/aaihb-rollback-fixture.php';$path=WP_PLUGIN_DIR.'/'.$plugin;
  if(!is_plugin_active($plugin)||!is_file($path))throw new RuntimeException('fixture');
+ add_filter('home_url',function($url,$path){return $path==='/'?'http://127.0.0.1:8080/aaihb-rollback-health.php':$url;},10,2);
  $stage='pre_update_backup';update_option('aaihb_guard_enabled',true,false);update_option('aaihb_rollback_db_marker','before-update',false);
  if(AAIHB_PluginGuard::before(true,['plugin'=>$plugin])!==true)throw new RuntimeException('backup');
  $stage='broken_update';file_put_contents($path,"<?php\n/* Plugin Name: AAIHB Rollback Fixture */\nfunction aaihb_broken_fixture( {\n");clearstatcache(true,$path);sleep(3);
