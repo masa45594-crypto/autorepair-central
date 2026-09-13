@@ -28,6 +28,7 @@ if(class_exists('WPCF7_ContactForm')){
     $cf7->set_title('AAIHB CI Fixture');
     $cf7->save();
 }
+echo json_encode(['wc_active_plugins'=>get_option('active_plugins'),'wc_install_exists'=>class_exists('WC_Install'),'wc_class_exists'=>class_exists('WooCommerce'),'wc_function_exists'=>function_exists('WC')]);
 if(class_exists('WC_Install')){
     WC_Install::install();
     $product=new WC_Product_Simple();
