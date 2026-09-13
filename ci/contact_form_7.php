@@ -13,7 +13,7 @@ $boundary='AaihbBoundary'.bin2hex(random_bytes(12));
 $body='';
 foreach($fields as $name=>$value){$body.="--$boundary\r\nContent-Disposition: form-data; name=\"$name\"\r\n\r\n$value\r\n";}
 $body.="--$boundary--\r\n";
-$ctx=stream_context_create(['http'=>['method'=>'POST','header'=>"Content-Type: multipart/form-data; boundary=$boundary\r\n",'content'=>$body,'timeout'=>30,'follow_location'=>0,'ignore_errors'=>true]]);
+$ctx=stream_context_create(['http'=>['method'=>'POST','header'=>"Content-Type: multipart/form-data; boundary=$boundary\r\nReferer: http://127.0.0.1:8080/\r\n",'content'=>$body,'timeout'=>30,'follow_location'=>0,'ignore_errors'=>true]]);
 $response=file_get_contents('http://127.0.0.1:8080/?rest_route=/contact-form-7/v1/contact-forms/'.$form_id.'/feedback',false,$ctx);
 $headers=$http_response_header??[];
 $status=0;$match=[];
