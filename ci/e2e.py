@@ -52,12 +52,16 @@ def main():
         unzip_safe(archive,work);site=work/'site';(work/'wordpress').rename(site)
         unzip_safe(ROOT/'autorepair-ai-hosting-beta-0.14.2.zip',site/'wp-content/plugins')
         report['plugin_zip_sha256']=hashlib.sha256((ROOT/'autorepair-ai-hosting-beta-0.14.2.zip').read_bytes()).hexdigest()
+        cf7_archive=work/'contact-form-7.zip'
+        with urllib.request.urlopen('https://downloads.wordpress.org/plugin/contact-form-7.latest-stable.zip',timeout=120) as src,cf7_archive.open('wb') as dst:shutil.copyfileobj(src,dst)
+        unzip_safe(cf7_archive,site/'wp-content/plugins')
+        report['contact_form_7_zip_sha256']=hashlib.sha256(cf7_archive.read_bytes()).hexdigest()
         vault=work/'vault';vault.mkdir(mode=0o700)
         password=secrets.token_hex(24)
         config="""<?php
 define('DB_NAME','rehearsal');define('DB_USER','rehearsal');define('DB_PASSWORD',getenv('TEST_DB_PASSWORD'));define('DB_HOST','localhost:/socket/mysqld.sock');define('DB_CHARSET','utf8mb4');define('DB_COLLATE','');$table_prefix='wp_';
 define('WP_HOME','http://127.0.0.1:8080');define('WP_SITEURL',WP_HOME);define('DISABLE_WP_CRON',true);define('WP_HTTP_BLOCK_EXTERNAL',true);define('WP_ACCESSIBLE_HOSTS','127.0.0.1,localhost');define('AUTOMATIC_UPDATER_DISABLED',true);
-define('AAIHB_VAULT_DIR','/work/vault');define('AAIHB_PUBLIC_ROOT','/work/site');define('ABSPATH',__DIR__.'/');require_once ABSPATH.'wp-settings.php';
+define('AAIHB_VAULT_DIR','/work/vault');define('AAIHB_PUBLIC_ROOT','/work/site');if(!defined('ABSPATH'))define('ABSPATH',__DIR__.'/');require_once ABSPATH.'wp-settings.php';
 """
         (site/'wp-config.php').write_text(config);(site/'fixture.txt').write_text('original')
         docker(['volume','create',socket]);volume=True
@@ -110,12 +114,18 @@ define('AAIHB_VAULT_DIR','/work/vault');define('AAIHB_PUBLIC_ROOT','/work/site')
                         form_proof.update(json.loads(proof))
                     except subprocess.CalledProcessError as error:
                         form_proof.update({'comment_form_http_and_database':False,'exit_code':error.returncode})
+                    try:
+                        cf7_proof=actual_command(['exec','-i',args[1],'php'],(ROOT/'ci/contact_form_7.php').read_bytes(),60)
+                        form_proof.update(json.loads(cf7_proof))
+                    except subprocess.CalledProcessError as error:
+                        form_proof.update({'contact_form_7_http_and_mail':False,'cf7_exit_code':error.returncode})
             return output
         runner.command=observed_command
         request={'dir':str(point),'manifest':json.loads((point/'manifest.json').read_text()),'nonce':secrets.token_hex(24)}
         report['stage']='real_clone_rehearsal'
         outcome=runner.execute(request);outcome.pop('nonce',None);report['rehearsal']=outcome;report['wordpress_comment_form']=form_proof
-        if outcome['status']!='passed' or form_proof.get('comment_form_http_and_database') is not True:raise RuntimeError('rehearsal or form failed')
+        report['custom_forms']={'contact_form_7':form_proof.get('contact_form_7_http_and_mail') is True}
+        if outcome['status']!='passed' or form_proof.get('comment_form_http_and_database') is not True or form_proof.get('contact_form_7_http_and_mail') is not True:raise RuntimeError('rehearsal or form failed')
         report['stage']='corrupt_backup_rejection'
         corrupt=work/'corrupt';shutil.copytree(point,corrupt);(corrupt/'files.zip').write_bytes(b'invalid fixture')
         negative=runner.execute({**request,'dir':str(corrupt)});report['corrupt_backup_rejected']=negative['status']=='failed'
