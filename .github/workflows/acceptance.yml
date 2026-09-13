@@ -14,6 +14,16 @@ on:
 permissions:
   contents: read
 jobs:
+  unit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run plugin unit tests (isolated WP stubs, no Docker/MySQL)
+        run: |
+          mkdir -p /tmp/aaihb-unit
+          unzip -q autorepair-ai-hosting-beta-0.14.2.zip -d /tmp/aaihb-unit
+          php /tmp/aaihb-unit/autorepair-ai-hosting-beta/tests/contracts.php
   restore:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
