@@ -16,6 +16,7 @@ file_put_contents(ABSPATH.'aaihb-rollback-health.php',"<?php\n\$fixture=__DIR__.
 activate_plugin('autorepair-ai-hosting-beta/autorepair-ai-hosting-beta.php');
 activate_plugin('aaihb-rollback-fixture/aaihb-rollback-fixture.php');
 activate_plugin('contact-form-7/wp-contact-form-7.php');
+activate_plugin('woocommerce/woocommerce.php');
 // Newly-activated plugins' init-time setup (CPT registration, etc.) hasn't run yet in this request.
 do_action('plugins_loaded');do_action('init');
 AAIHB_Beta::upgrade();
@@ -26,6 +27,15 @@ if(class_exists('WPCF7_ContactForm')){
     $cf7=WPCF7_ContactForm::get_template();
     $cf7->set_title('AAIHB CI Fixture');
     $cf7->save();
+}
+if(class_exists('WC_Install')){
+    WC_Install::install();
+    $product=new WC_Product_Simple();
+    $product->set_name('AAIHB CI Fixture Product');
+    $product->set_regular_price('10');
+    $product->set_catalog_visibility('visible');
+    $product->set_status('publish');
+    $product->save();
 }
 update_option('default_comment_status','open');update_option('comment_registration',0);update_option('comment_moderation',1);update_option('require_name_email',1);update_option('comments_notify',0);update_option('moderation_notify',0);
 wp_update_post(['ID'=>1,'post_status'=>'publish','comment_status'=>'open']);
