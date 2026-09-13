@@ -18,7 +18,8 @@ $response=file_get_contents('http://127.0.0.1:8080/?rest_route=/contact-form-7/v
 $headers=$http_response_header??[];
 $status=0;$match=[];
 if(isset($headers[0])&&preg_match('~^HTTP/\S+ ([0-9][0-9][0-9])(?: |$)~',$headers[0],$match)===1)$status=(int)$match[1];
-$payload=json_decode((string)$response,true);
+$json_only=(string)$response;$marker_pos=strpos($json_only,'<!--');if($marker_pos!==false)$json_only=substr($json_only,0,$marker_pos);
+$payload=json_decode($json_only,true);
 $cf7_status=is_array($payload)?($payload['status']??null):null;
 $stmt=$db->prepare("SELECT option_value FROM wp_options WHERE option_name='aaihb_test_last_mail_subject'");$stmt->execute();$row2=$stmt->get_result()->fetch_row();
 $mail_marker=$row2?$row2[0]:null;
