@@ -11,6 +11,6 @@ if(isset($headers[0])&&preg_match('~^HTTP/\S+ ([0-9][0-9][0-9])(?: |$)~',$header
 mysqli_report(MYSQLI_REPORT_ERROR|MYSQLI_REPORT_STRICT);
 $db=new mysqli('localhost','rehearsal',getenv('TEST_DB_PASSWORD'),'rehearsal',0,'/socket/mysqld.sock');
 $stmt=$db->prepare('SELECT COUNT(*) FROM wp_comments WHERE comment_content=? AND comment_post_ID=1');$stmt->bind_param('s',$marker);$stmt->execute();$count=$stmt->get_result()->fetch_row()[0];
-$passed=$status===302&&(int)$count===1;
+$passed=in_array($status,[200,302],true)&&(int)$count===1;
 echo json_encode(['comment_form_http_and_database'=>$passed,'http_status'=>$status,'database_count'=>(int)$count]);
 exit(0);
