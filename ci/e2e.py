@@ -33,7 +33,7 @@ def unzip_safe(archive,dest):
 
 def main():
     REPORTS.mkdir(exist_ok=True)
-    report={'status':'not_run','scope':'synthetic_wordpress_6_8_php_8_3_mysql_8_4',
+    report={'status':'not_run','scope':'synthetic_wordpress_latest_php_8_3_mysql_8_4',
             'production_site':'not_tested','purchase_and_license':'not_configured',
             'custom_forms':'not_configured','external_integration':'not_configured'}
     work=Path(tempfile.mkdtemp(prefix='aaihb-e2e-'))
@@ -47,7 +47,7 @@ def main():
         report['images']={i:docker(['image','inspect','--format','{{.Id}}',i]).decode().strip() for i in (DB_IMAGE,IMAGE)}
         report['stage']='fixture'
         archive=work/'wordpress.zip'
-        with urllib.request.urlopen('https://wordpress.org/wordpress-6.8.zip',timeout=120) as src,archive.open('wb') as dst:shutil.copyfileobj(src,dst)
+        with urllib.request.urlopen('https://wordpress.org/latest.zip',timeout=120) as src,archive.open('wb') as dst:shutil.copyfileobj(src,dst)
         report['wordpress_zip_sha256']=hashlib.sha256(archive.read_bytes()).hexdigest()
         unzip_safe(archive,work);site=work/'site';(work/'wordpress').rename(site)
         unzip_safe(ROOT/'autorepair-ai-hosting-beta-0.14.2.zip',site/'wp-content/plugins')
