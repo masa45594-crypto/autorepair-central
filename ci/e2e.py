@@ -89,7 +89,7 @@ define('AAIHB_VAULT_DIR','/work/vault');define('AAIHB_PUBLIC_ROOT','/work/site')
         form_proof={}
         def observed_command(args,data=None,timeout=120):
             output=actual_command(args,data,timeout)
-            if '-r' in args and args[0]=='exec':
+            if args[0]=='exec' and ('-r' in args or '/input/probe.php' in args):
                 page=json.loads(output)
                 if page.get('homepage') is True and page.get('wordpress') is not True:
                     diag = "$b=file_get_contents('http://127.0.0.1:8080/');echo json_encode(['headers'=>array_map(fn($h)=>explode(':',$h,2)[0],$http_response_header),'mu_file'=>is_file('/site/wp-content/mu-plugins/aaihb-test.php'),'nonce_available'=>strlen(getenv('TEST_NONCE'))>0,'install_page'=>strpos($b,'Installation')!==false]);"
