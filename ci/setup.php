@@ -25,7 +25,7 @@ if(class_exists('WPCF7_ContactForm')){
     $cf7->save();
     $mu_dir=WP_CONTENT_DIR.'/mu-plugins';
     if(!is_dir($mu_dir))mkdir($mu_dir,0755,true);
-    file_put_contents($mu_dir.'/aaihb-cf7-mail-intercept.php',"<?php\n// Disposable fixture only: short-circuits real mail delivery and records the subject for acceptance checks.\nadd_filter('pre_wp_mail',function(\$null,\$atts){update_option('aaihb_cf7_mail_marker',(string)(\$atts['subject']??''),false);return true;},10,2);\n");
+    file_put_contents($mu_dir.'/aaihb-cf7-mail-intercept.php',"<?php\n// Disposable fixture only: short-circuits real mail delivery and records the subject for acceptance checks.\nadd_filter('pre_wp_mail',function(\$null,\$atts){update_option('aaihb_cf7_mail_marker',(string)(\$atts['subject']??''),false);return true;},10,2);\nadd_filter('wpcf7_spam',function(\$spam,\$submission){if(\$spam&&method_exists(\$submission,'spam_log')){update_option('aaihb_cf7_spam_log',json_encode(\$submission->spam_log()),false);}return \$spam;},20,2);\n");
 }
 update_option('default_comment_status','open');update_option('comment_registration',0);update_option('comment_moderation',1);update_option('require_name_email',1);update_option('comments_notify',0);update_option('moderation_notify',0);
 wp_update_post(['ID'=>1,'post_status'=>'publish','comment_status'=>'open']);
