@@ -5,6 +5,7 @@ on:
       - "ci/**"
       - "autorepair-ai-hosting-beta-*.zip"
       - ".github/workflows/acceptance.yml"
+      - "central-service/**"
   workflow_dispatch:
     inputs:
       stripe_sandbox:
@@ -14,6 +15,13 @@ on:
 permissions:
   contents: read
 jobs:
+  central:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run central metering and Stripe safety tests
+        run: python3 central-service/test_service.py
   unit:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
