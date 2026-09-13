@@ -187,6 +187,30 @@ def handler(store):
             session=stripe_request('POST','/checkout/sessions',{'mode':'subscription','customer':customer['id'],'success_url':success,'cancel_url':cancel,'line_items[0][price]':cfg['price'],'line_items[0][quantity]':'1','metadata[account]':account,'subscription_data[metadata][account]':account})
             self.reply(200,{'mode':'test','checkout_url':session.get('url','')})
 
+        def stripe_hub_checkout(self,token,body):
+            """Create a test Checkout session for the authenticated hub's account.
+
+            This route intentionally does not accept an account ID.  A hub token can
+            only create a session for the account to which that hub was provisioned.
+            """
+            success=body.get('success_url','');cancel=body.get('cancel_url','')
+            for url in (success,cancel):
+                p=urllib.parse.urlparse(url)
+                if p.scheme!='https' or not p.netloc or p.username or p.password or p.fragment: raise Invalid('invalid redirect URL')
+            with store.db() as c:
+                hub=store.auth(c,token);account=hub['account']
+            cfg=stripe_config()
+            if not cfg['configured']: raise StripeError('Stripe test configuration is incomplete')
+            state=store.stripe_state(account)
+            if state['status'] in ('active','trialing','past_due','unpaid'):
+                raise Conflict('account already has a Stripe test subscription')
+            customer=stripe_request('POST','/customers',{'metadata[account]':account})
+            session=stripe_request('POST','/checkout/sessions',{'mode':'subscription','customer':customer['id'],'success_url':success,'cancel_url':cancel,'line_items[0][price]':cfg['price'],'line_items[0][quantity]':'1','metadata[account]':account,'subscription_data[metadata][account]':account})
+            checkout_url=session.get('url','')
+            if not isinstance(checkout_url,str) or not checkout_url.startswith('https://checkout.stripe.com/'):
+                raise StripeError('Stripe returned an invalid Checkout URL')
+            self.reply(200,{'mode':'test','checkout_url':checkout_url})
+
         def stripe_sync(self,body):
             self.admin_allowed();cfg=stripe_config()
             if not cfg['configured']: raise StripeError('Stripe test configuration is incomplete')
@@ -225,6 +249,8 @@ def handler(store):
                     r={'hub_token':store.provision(body.get('account'),body.get('hub'),int(body.get('base',10000)),int(body.get('unit',100))),'mode':'pilot'}
                 elif self.command=='POST' and self.path=='/v1/admin/stripe/checkout':
                     return self.stripe_checkout(self.body())
+                elif self.command=='POST' and self.path=='/v1/stripe/test-checkout':
+                    return self.stripe_hub_checkout(token,self.body())
                 elif self.command=='POST' and self.path=='/v1/admin/stripe/sync':
                     return self.stripe_sync(self.body())
                 elif self.command=='POST' and self.path=='/v1/stripe/webhook':
