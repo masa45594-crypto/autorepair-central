@@ -23,8 +23,10 @@ $payload=json_decode($json_only,true);
 $cf7_status=is_array($payload)?($payload['status']??null):null;
 $stmt=$db->prepare("SELECT option_value FROM wp_options WHERE option_name='aaihb_test_last_mail_subject'");$stmt->execute();$row2=$stmt->get_result()->fetch_row();
 $mail_marker=$row2?$row2[0]:null;
-$passed=$status===200&&$cf7_status==='mail_sent'&&$mail_marker===$marker;
-$out=['contact_form_7_http_and_mail'=>$passed,'http_status'=>$status,'cf7_status'=>$cf7_status,'mail_marker_matched'=>$mail_marker===$marker];
+// CF7's default subject template wraps the field in extra text (e.g. site title), so check containment.
+$marker_matched=is_string($mail_marker)&&strpos($mail_marker,$marker)!==false;
+$passed=$status===200&&$cf7_status==='mail_sent'&&$marker_matched;
+$out=['contact_form_7_http_and_mail'=>$passed,'http_status'=>$status,'cf7_status'=>$cf7_status,'mail_marker_matched'=>$marker_matched];
 if(!$passed){$out['debug_response_snippet']=substr((string)$response,0,400);$out['debug_expected_marker']=$marker;$out['debug_stored_marker']=$mail_marker;}
 echo json_encode($out);
 exit(0);
