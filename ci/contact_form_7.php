@@ -25,6 +25,6 @@ $stmt=$db->prepare("SELECT option_value FROM wp_options WHERE option_name='aaihb
 $mail_marker=$row2?$row2[0]:null;
 $passed=$status===200&&$cf7_status==='mail_sent'&&$mail_marker===$marker;
 $out=['contact_form_7_http_and_mail'=>$passed,'http_status'=>$status,'cf7_status'=>$cf7_status,'mail_marker_matched'=>$mail_marker===$marker];
-if(!$passed)$out['debug_response_snippet']=substr((string)$response,0,400);
+if(!$passed){$out['debug_response_snippet']=substr((string)$response,0,400);$out['debug_expected_marker']=$marker;$out['debug_stored_marker']=$mail_marker;}
 echo json_encode($out);
 exit(0);
