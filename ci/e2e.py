@@ -61,7 +61,7 @@ def main():
         config="""<?php
 define('DB_NAME','rehearsal');define('DB_USER','rehearsal');define('DB_PASSWORD',getenv('TEST_DB_PASSWORD'));define('DB_HOST','localhost:/socket/mysqld.sock');define('DB_CHARSET','utf8mb4');define('DB_COLLATE','');$table_prefix='wp_';
 define('WP_HOME','http://127.0.0.1:8080');define('WP_SITEURL',WP_HOME);define('DISABLE_WP_CRON',true);define('WP_HTTP_BLOCK_EXTERNAL',true);define('WP_ACCESSIBLE_HOSTS','127.0.0.1,localhost');define('AUTOMATIC_UPDATER_DISABLED',true);
-define('AAIHB_VAULT_DIR','/work/vault');define('AAIHB_PUBLIC_ROOT','/work/site');define('ABSPATH',__DIR__.'/');require_once ABSPATH.'wp-settings.php';
+define('AAIHB_VAULT_DIR','/work/vault');define('AAIHB_PUBLIC_ROOT','/work/site');if(!defined('ABSPATH'))define('ABSPATH',__DIR__.'/');require_once ABSPATH.'wp-settings.php';
 """
         (site/'wp-config.php').write_text(config);(site/'fixture.txt').write_text('original')
         docker(['volume','create',socket]);volume=True
