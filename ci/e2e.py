@@ -17,7 +17,7 @@ import zipfile
 
 ROOT=Path(__file__).resolve().parents[1]
 REPORTS=ROOT/'reports'
-IMAGE='aaihb-restore-test:0.14.2'
+IMAGE='aaihb-restore-test:0.14.11'
 DB_IMAGE='mysql:8.4'
 
 def docker(args,data=None,timeout=120):
@@ -50,8 +50,8 @@ def main():
         with urllib.request.urlopen('https://wordpress.org/latest.zip',timeout=120) as src,archive.open('wb') as dst:shutil.copyfileobj(src,dst)
         report['wordpress_zip_sha256']=hashlib.sha256(archive.read_bytes()).hexdigest()
         unzip_safe(archive,work);site=work/'site';(work/'wordpress').rename(site)
-        unzip_safe(ROOT/'autorepair-ai-hosting-beta-0.14.2.zip',site/'wp-content/plugins')
-        report['plugin_zip_sha256']=hashlib.sha256((ROOT/'autorepair-ai-hosting-beta-0.14.2.zip').read_bytes()).hexdigest()
+        unzip_safe(ROOT/'autorepair-ai-hosting-beta-0.14.11.zip',site/'wp-content/plugins')
+        report['plugin_zip_sha256']=hashlib.sha256((ROOT/'autorepair-ai-hosting-beta-0.14.11.zip').read_bytes()).hexdigest()
         cf7_archive=work/'contact-form-7.zip'
         with urllib.request.urlopen('https://downloads.wordpress.org/plugin/contact-form-7.latest-stable.zip',timeout=120) as src,cf7_archive.open('wb') as dst:shutil.copyfileobj(src,dst)
         unzip_safe(cf7_archive,site/'wp-content/plugins')
