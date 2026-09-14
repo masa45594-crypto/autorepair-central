@@ -227,13 +227,20 @@ def handler(store):
             # authoritative subscription state before reporting it to a hub.
             if state['subscription_id']:
                 subscription=stripe_request('GET','/subscriptions/'+urllib.parse.quote(state['subscription_id'],safe=''))
+                # Stripe can represent an end-of-period cancellation with either
+                # cancel_at_period_end/current_period_end or a concrete cancel_at.
+                cancel_at=subscription.get('cancel_at')
+                pending=bool(subscription.get('cancel_at_period_end')) or (type(cancel_at) is int and cancel_at>0)
+                period=subscription.get('current_period_end')
+                if type(period) is not int or period<0:
+                    period=cancel_at if type(cancel_at) is int and cancel_at>=0 else 0
                 state=store.stripe_save(
                     account,
                     customer=subscription.get('customer',''),
                     subscription=subscription.get('id',''),
                     status=subscription.get('status',''),
-                    cancel_at_period_end=subscription.get('cancel_at_period_end'),
-                    current_period_end=subscription.get('current_period_end'),
+                    cancel_at_period_end=pending,
+                    current_period_end=period,
                 )
             pending=bool(state['cancel_at_period_end'] and state['status'] in ('active','trialing','past_due','unpaid'))
             self.reply(200,{'mode':'test','subscription_status':state['status'],'updated':state['updated'],'cancellation_pending':pending,'cancellation_at':state['current_period_end'] if pending else 0})
