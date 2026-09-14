@@ -223,6 +223,18 @@ def handler(store):
             with store.db() as c:
                 hub=store.auth(c,token);account=hub['account']
             state=store.stripe_state(account)
+            # Webhook deliveries can arrive out of order.  Ask Stripe for the
+            # authoritative subscription state before reporting it to a hub.
+            if state['subscription_id']:
+                subscription=stripe_request('GET','/subscriptions/'+urllib.parse.quote(state['subscription_id'],safe=''))
+                state=store.stripe_save(
+                    account,
+                    customer=subscription.get('customer',''),
+                    subscription=subscription.get('id',''),
+                    status=subscription.get('status',''),
+                    cancel_at_period_end=subscription.get('cancel_at_period_end'),
+                    current_period_end=subscription.get('current_period_end'),
+                )
             pending=bool(state['cancel_at_period_end'] and state['status'] in ('active','trialing','past_due','unpaid'))
             self.reply(200,{'mode':'test','subscription_status':state['status'],'updated':state['updated'],'cancellation_pending':pending,'cancellation_at':state['current_period_end'] if pending else 0})
 
