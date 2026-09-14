@@ -56,6 +56,10 @@ jobs:
         env:
           STRIPE_TEST_SECRET_KEY: ${{ secrets.STRIPE_TEST_SECRET_KEY }}
         run: python3 ci/stripe_sandbox.py
+      - name: Central-service Stripe HTTP routes (checkout, webhook, portal, usage sync)
+        env:
+          STRIPE_TEST_SECRET_KEY: ${{ secrets.STRIPE_TEST_SECRET_KEY }}
+        run: python3 ci/stripe_central_service.py
       - name: Save sandbox evidence
         if: always()
         uses: actions/upload-artifact@v4
