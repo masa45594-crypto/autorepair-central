@@ -38,8 +38,8 @@ def stripe_api(method, path, key, data=None):
         return e.code, json.loads(e.read())
 
 
-def call(url, headers=None, body=None, method='GET'):
-    data = json.dumps(body).encode() if body is not None else None
+def call(url, headers=None, body=None, method='GET', raw=None):
+    data = raw if raw is not None else (json.dumps(body).encode() if body is not None else None)
     req = urllib.request.Request(url, data=data, headers=headers or {}, method=method)
     try:
         with urllib.request.urlopen(req, timeout=20) as response:
@@ -98,9 +98,9 @@ def run(key):
             result['checks']['subscription_created'] = code == 200 and subscription.get('status') == 'active'
 
             event = json.dumps({'type': 'customer.subscription.updated', 'data': {'object': subscription}}).encode()
-            code, body = call(base + '/v1/stripe/webhook', {'Stripe-Signature': sign(webhook_secret, event)}, None, 'POST')
+            code, body = call(base + '/v1/stripe/webhook', {'Stripe-Signature': sign(webhook_secret, event)}, method='POST', raw=event)
             result['checks']['webhook_accepted'] = code == 200
-            code, body = call(base + '/v1/stripe/webhook', {'Stripe-Signature': sign('whsec_wrong', event)}, None, 'POST')
+            code, body = call(base + '/v1/stripe/webhook', {'Stripe-Signature': sign('whsec_wrong', event)}, method='POST', raw=event)
             result['checks']['webhook_bad_signature_rejected'] = code == 401
 
             code, body = call(base + '/v1/stripe/test-status', auth)
