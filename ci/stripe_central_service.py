@@ -2,9 +2,11 @@
 
 stripe_sandbox.py only exercises the raw Stripe API. This drives service.py's
 dispatch() over real HTTP with a hub Bearer token -- the same way the
-WordPress plugin (central.php) calls it -- against the real Stripe test API.
-No mocks: the checkout session, customer, payment method and subscription are
-all created for real in Stripe test mode.
+WordPress plugin (central.php) calls it, via the existing-hub self-upgrade
+compatibility shim (POST/GET /v1/stripe/test-checkout, test-status,
+test-portal; see central-service/README-JA.md) -- against the real Stripe
+test API. No mocks: the checkout session, customer, payment method and
+subscription are all created for real in Stripe test mode.
 """
 import hashlib
 import hmac
@@ -55,15 +57,13 @@ def sign(secret, payload):
 
 
 def run(key):
-    result = {'scope': 'central_service_stripe_http', 'status': 'not_configured', 'checks': {}}
+    result = {'scope': 'central_service_stripe_http_shim', 'status': 'not_configured', 'checks': {}}
     if not key or not key.startswith('sk_test_'):
         return result
     result['status'] = 'failed'
-    admin_token = secrets.token_hex(16)
     webhook_secret = 'whsec_' + secrets.token_hex(16)
-    os.environ['STRIPE_SECRET_KEY'] = key
+    os.environ['STRIPE_TEST_SECRET_KEY'] = key
     os.environ['STRIPE_WEBHOOK_SECRET'] = webhook_secret
-    os.environ['ADMIN_TOKEN'] = admin_token
     subscription_id = None
     server = None
     try:
@@ -97,11 +97,21 @@ def run(key):
             subscription_id = subscription.get('id')
             result['checks']['subscription_created'] = code == 200 and subscription.get('status') == 'active'
 
-            event = json.dumps({'type': 'customer.subscription.updated', 'data': {'object': subscription}}).encode()
+            # Real Stripe fires customer.subscription.created right after a
+            # subscription-mode Checkout completes; that's what links the
+            # subscription/item/customer onto the account (see
+            # service.handle_stripe_event), not checkout.session.completed.
+            # 'id' here is the *event's* id (evt_...), required by
+            # Store.record_stripe_event's idempotency check -- distinct from
+            # the subscription's own id nested inside data.object.
+            event = json.dumps({'id': 'evt_' + secrets.token_hex(12), 'type': 'customer.subscription.created', 'data': {'object': subscription}}).encode()
             code, body = call(base + '/v1/stripe/webhook', {'Stripe-Signature': sign(webhook_secret, event)}, method='POST', raw=event)
-            result['checks']['webhook_accepted'] = code == 200
+            result['checks']['webhook_accepted'] = code == 200 and body.get('type') == 'customer.subscription.created'
             code, body = call(base + '/v1/stripe/webhook', {'Stripe-Signature': sign('whsec_wrong', event)}, method='POST', raw=event)
             result['checks']['webhook_bad_signature_rejected'] = code == 401
+
+            code, body = call(base + '/v1/stripe/test-checkout', auth, {'success_url': 'https://example.com/ok', 'cancel_url': 'https://example.com/cancel'}, 'POST')
+            result['checks']['checkout_conflict_once_active'] = code == 409
 
             code, body = call(base + '/v1/stripe/test-status', auth)
             result['checks']['status_reflects_active'] = code == 200 and body.get('mode') == 'test' and body.get('subscription_status') == 'active'
@@ -109,11 +119,14 @@ def run(key):
             code, body = call(base + '/v1/stripe/test-portal', auth, {'return_url': 'https://example.com/account'}, 'POST')
             result['checks']['portal_session'] = code == 200 and body.get('mode') == 'test' and str(body.get('portal_url', '')).startswith('https://billing.stripe.com/')
 
+            # /v1/snapshot syncs the subscription item's quantity to the
+            # observed peak automatically now (sync_stripe_quantity), no
+            # separate admin sync call.
             sites = [hashlib.sha256(str(i).encode()).hexdigest() for i in range(3)]
             call(base + '/v1/snapshot', auth, {'sequence': 1, 'sites': sites}, 'POST')
-            admin = {'X-Admin-Token': admin_token, 'Content-Type': 'application/json'}
-            code, body = call(base + '/v1/admin/stripe/sync', admin, {'account': 'a'}, 'POST')
-            result['checks']['usage_synced_to_subscription_quantity'] = code == 200 and body.get('peak') == 3 and body.get('quantity') == 3
+            item_id = ((subscription.get('items') or {}).get('data') or [{}])[0].get('id')
+            _, item = stripe_api('GET', 'subscription_items/' + item_id, key) if item_id else (None, {})
+            result['checks']['usage_synced_to_subscription_quantity'] = item.get('quantity') == 3
 
             result['status'] = 'passed' if all(result['checks'].values()) else 'failed'
     except Exception as error:
