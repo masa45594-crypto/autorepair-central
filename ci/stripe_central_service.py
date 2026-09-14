@@ -101,7 +101,10 @@ def run(key):
             # subscription-mode Checkout completes; that's what links the
             # subscription/item/customer onto the account (see
             # service.handle_stripe_event), not checkout.session.completed.
-            event = json.dumps({'type': 'customer.subscription.created', 'data': {'object': subscription}}).encode()
+            # 'id' here is the *event's* id (evt_...), required by
+            # Store.record_stripe_event's idempotency check -- distinct from
+            # the subscription's own id nested inside data.object.
+            event = json.dumps({'id': 'evt_' + secrets.token_hex(12), 'type': 'customer.subscription.created', 'data': {'object': subscription}}).encode()
             code, body = call(base + '/v1/stripe/webhook', {'Stripe-Signature': sign(webhook_secret, event)}, method='POST', raw=event)
             result['checks']['webhook_accepted'] = code == 200 and body.get('type') == 'customer.subscription.created'
             code, body = call(base + '/v1/stripe/webhook', {'Stripe-Signature': sign('whsec_wrong', event)}, method='POST', raw=event)
