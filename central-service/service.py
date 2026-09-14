@@ -218,6 +218,22 @@ def handler(store):
             state=store.stripe_state(account)
             self.reply(200,{'mode':'test','subscription_status':state['status'],'updated':state['updated']})
 
+        def stripe_hub_portal(self,token,body):
+            success=body.get('return_url','')
+            p=urllib.parse.urlparse(success)
+            if p.scheme!='https' or not p.netloc or p.username or p.password or p.fragment: raise Invalid('invalid return URL')
+            with store.db() as c:
+                hub=store.auth(c,token);account=hub['account']
+            cfg=stripe_config()
+            if not cfg['configured']: raise StripeError('Stripe test configuration is incomplete')
+            state=store.stripe_state(account)
+            if not state['customer_id'].startswith('cus_'): raise Invalid('no Stripe test customer for account')
+            session=stripe_request('POST','/billing_portal/sessions',{'customer':state['customer_id'],'return_url':success})
+            portal_url=session.get('url','')
+            portal=urllib.parse.urlparse(portal_url)
+            if not isinstance(portal_url,str) or portal.scheme!='https' or portal.hostname!='billing.stripe.com': raise StripeError('Stripe returned an invalid portal URL')
+            self.reply(200,{'mode':'test','portal_url':portal_url})
+
         def stripe_sync(self,body):
             self.admin_allowed();cfg=stripe_config()
             if not cfg['configured']: raise StripeError('Stripe test configuration is incomplete')
@@ -260,6 +276,8 @@ def handler(store):
                     return self.stripe_hub_checkout(token,self.body())
                 elif self.command=='GET' and self.path=='/v1/stripe/test-status':
                     return self.stripe_hub_status(token)
+                elif self.command=='POST' and self.path=='/v1/stripe/test-portal':
+                    return self.stripe_hub_portal(token,self.body())
                 elif self.command=='POST' and self.path=='/v1/admin/stripe/sync':
                     return self.stripe_sync(self.body())
                 elif self.command=='POST' and self.path=='/v1/stripe/webhook':
