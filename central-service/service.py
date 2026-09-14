@@ -61,6 +61,7 @@ class Store:
             CREATE TABLE IF NOT EXISTS months(account TEXT NOT NULL, month TEXT NOT NULL, peak INTEGER NOT NULL, base INTEGER NOT NULL, unit INTEGER NOT NULL, PRIMARY KEY(account,month));
             CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY, hub TEXT NOT NULL, sequence INTEGER NOT NULL, digest TEXT NOT NULL, received TEXT NOT NULL, count INTEGER NOT NULL, UNIQUE(hub,sequence));
             CREATE TABLE IF NOT EXISTS stripe_accounts(account TEXT PRIMARY KEY REFERENCES accounts(id), customer_id TEXT NOT NULL DEFAULT '', subscription_id TEXT NOT NULL DEFAULT '', item_id TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT '', updated TEXT NOT NULL DEFAULT '');
+            CREATE TABLE IF NOT EXISTS stripe_cancellations(account TEXT PRIMARY KEY REFERENCES accounts(id), cancel_at_period_end INTEGER NOT NULL DEFAULT 0, current_period_end INTEGER NOT NULL DEFAULT 0);
             ''')
     @contextlib.contextmanager
     def db(self):
@@ -122,7 +123,7 @@ class Store:
             c.execute('INSERT INTO events(hub,sequence,digest,received,count) VALUES(?,?,?,?,?)',(h['id'],seq,body,now,len(sites)))
             h=c.execute('SELECT * FROM hubs WHERE id=?',(h['id'],)).fetchone()
             return self.result(c,h,now)
-    def stripe_save(self,account,customer='',subscription='',item='',status='',now=None):
+    def stripe_save(self,account,customer='',subscription='',item='',status='',cancel_at_period_end=None,current_period_end=None,now=None):
         if not re.fullmatch(r'[a-z0-9_-]{1,64}',str(account)): raise Invalid('invalid account ID')
         now=now or utc()
         with self.db() as c:
@@ -133,12 +134,18 @@ class Store:
             item=item or (old['item_id'] if old else '')
             status=status or (old['status'] if old else '')
             c.execute('INSERT INTO stripe_accounts(account,customer_id,subscription_id,item_id,status,updated) VALUES(?,?,?,?,?,?) ON CONFLICT(account) DO UPDATE SET customer_id=excluded.customer_id,subscription_id=excluded.subscription_id,item_id=excluded.item_id,status=excluded.status,updated=excluded.updated',(account,customer,subscription,item,status,now))
-            return dict(c.execute('SELECT account,customer_id,subscription_id,item_id,status,updated FROM stripe_accounts WHERE account=?',(account,)).fetchone())
+            if cancel_at_period_end is not None or current_period_end is not None:
+                old_cancel=c.execute('SELECT * FROM stripe_cancellations WHERE account=?',(account,)).fetchone()
+                cancel_at_period_end=int(bool(cancel_at_period_end)) if cancel_at_period_end is not None else (old_cancel['cancel_at_period_end'] if old_cancel else 0)
+                current_period_end=current_period_end if type(current_period_end) is int and current_period_end>=0 else (old_cancel['current_period_end'] if old_cancel else 0)
+                c.execute('INSERT INTO stripe_cancellations(account,cancel_at_period_end,current_period_end) VALUES(?,?,?) ON CONFLICT(account) DO UPDATE SET cancel_at_period_end=excluded.cancel_at_period_end,current_period_end=excluded.current_period_end',(account,cancel_at_period_end,current_period_end))
+            row=c.execute('SELECT s.account,s.customer_id,s.subscription_id,s.item_id,s.status,s.updated,COALESCE(x.cancel_at_period_end,0) AS cancel_at_period_end,COALESCE(x.current_period_end,0) AS current_period_end FROM stripe_accounts s LEFT JOIN stripe_cancellations x ON x.account=s.account WHERE s.account=?',(account,)).fetchone()
+            return dict(row)
 
     def stripe_state(self,account):
         with self.db() as c:
-            row=c.execute('SELECT account,customer_id,subscription_id,item_id,status,updated FROM stripe_accounts WHERE account=?',(account,)).fetchone()
-            return dict(row) if row else {'account':account,'customer_id':'','subscription_id':'','item_id':'','status':'','updated':''}
+            row=c.execute('SELECT s.account,s.customer_id,s.subscription_id,s.item_id,s.status,s.updated,COALESCE(x.cancel_at_period_end,0) AS cancel_at_period_end,COALESCE(x.current_period_end,0) AS current_period_end FROM stripe_accounts s LEFT JOIN stripe_cancellations x ON x.account=s.account WHERE s.account=?',(account,)).fetchone()
+            return dict(row) if row else {'account':account,'customer_id':'','subscription_id':'','item_id':'','status':'','updated':'','cancel_at_period_end':0,'current_period_end':0}
 
     def stripe_peak(self,account,now=None):
         now=now or utc()
@@ -216,7 +223,8 @@ def handler(store):
             with store.db() as c:
                 hub=store.auth(c,token);account=hub['account']
             state=store.stripe_state(account)
-            self.reply(200,{'mode':'test','subscription_status':state['status'],'updated':state['updated']})
+            pending=bool(state['cancel_at_period_end'] and state['status'] in ('active','trialing','past_due','unpaid'))
+            self.reply(200,{'mode':'test','subscription_status':state['status'],'updated':state['updated'],'cancellation_pending':pending,'cancellation_at':state['current_period_end'] if pending else 0})
 
         def stripe_hub_portal(self,token,body):
             success=body.get('return_url','')
@@ -254,7 +262,9 @@ def handler(store):
             event=json.loads(raw);obj=((event.get('data') or {}).get('object') or {});metadata=obj.get('metadata') or {};account=metadata.get('account','');etype=event.get('type','')
             if account and re.fullmatch(r'[a-z0-9_-]{1,64}',str(account)):
                 subscription=obj.get('subscription','') if etype=='checkout.session.completed' else obj.get('id','')
-                store.stripe_save(account,customer=obj.get('customer',''),subscription=subscription,status=obj.get('status','active' if etype=='checkout.session.completed' else ''))
+                cancel=obj.get('cancel_at_period_end') if etype.startswith('customer.subscription.') else None
+                period=obj.get('current_period_end') if etype.startswith('customer.subscription.') else None
+                store.stripe_save(account,customer=obj.get('customer',''),subscription=subscription,status=obj.get('status','active' if etype=='checkout.session.completed' else ''),cancel_at_period_end=cancel,current_period_end=period)
             self.reply(200,{'received':True})
 
         def dispatch(self):
