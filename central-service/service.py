@@ -291,6 +291,15 @@ class Store:
             r=dict(row);r.update(mode='pilot',currency='jpy',amount_yen=r['base']+r['peak']*r['unit'],billable=False,unsynced_hubs=unsynced)
             return r
 
+def _overage_item_id(items):
+    """Pick the subscription item whose price matches STRIPE_OVERAGE_PRICE_ID out of a
+    subscription's item list; falls back to the first item if the env var is unset or no
+    item matches, so a single-price (no overage configured) subscription still links."""
+    if not items:return None
+    overage_price_id=os.environ.get('STRIPE_OVERAGE_PRICE_ID','')
+    matched=next((it for it in items if overage_price_id and (it.get('price') or {}).get('id')==overage_price_id),None)
+    return (matched or items[0]).get('id')
+
 def handle_stripe_event(store,event):
     """Wire specific verified Stripe events to account actions; everything else is left as
     just recorded (see Store.record_stripe_event). Requires 'account' (and for provisioning,
@@ -317,6 +326,24 @@ def handle_stripe_event(store,event):
                 manage_token=store.issue_management_token(account,stripe_customer)
                 manage_base=os.environ.get('MANAGE_BASE_URL','')
                 if manage_base:manage_url=manage_base.rstrip('/')+'/v1/manage/portal?token='+manage_token
+            # Stripe does not guarantee webhook delivery order: customer.subscription.created
+            # for this same purchase can (and in practice does) arrive before this event. That
+            # handler requires the account to already exist, so if it arrives first it finds
+            # nothing to link to and silently gives up for good (Stripe does not redeliver a
+            # successfully-received event). Link the subscription here too, right after the
+            # account is guaranteed to exist, using the subscription id Checkout already
+            # carries -- so linkage no longer depends on event arrival order. Best-effort: a
+            # failure here must not undo the provisioning that already happened above.
+            subscription_id=obj.get('subscription')
+            if subscription_id:
+                key=stripe_secret_key()
+                if key:
+                    try:
+                        sub=stripe_get('subscriptions/'+subscription_id,key)
+                        items=((sub.get('items') or {}).get('data') or [])
+                        item_id=_overage_item_id(items)
+                        if item_id:store.set_stripe_subscription(account,subscription_id,item_id,customer_id=stripe_customer)
+                    except Exception:pass
             # Webhook responses are not seen by the customer, so email is the only delivery
             # channel; a delivery failure must not undo the provision that already happened.
             email=(obj.get('customer_details') or {}).get('email') or obj.get('customer_email')
@@ -331,7 +358,7 @@ def handle_stripe_event(store,event):
             account=meta.get('account')
             if not account:return {'action':'skipped','reason':'missing account metadata'}
             subscription_id=obj.get('id');items=((obj.get('items') or {}).get('data') or [])
-            item_id=items[0].get('id') if items else None
+            item_id=_overage_item_id(items)
             if not subscription_id or not item_id:return {'action':'skipped','reason':'missing subscription or item id'}
             store.set_stripe_subscription(account,subscription_id,item_id,customer_id=obj.get('customer'))
             return {'action':'subscription_linked','account':account,'subscription':subscription_id}

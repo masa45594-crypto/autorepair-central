@@ -197,6 +197,40 @@ class Tests(unittest.TestCase):
   self.assertIsNone(self.s.payment_status('a','2026-10-01'))
   other={'type':'invoice.finalized','data':{'object':{}}}
   self.assertEqual(handle_stripe_event(self.s,other),{'action':'recorded'})
+ def test_checkout_completed_links_subscription_out_of_order(self):
+  # Simulates customer.subscription.created arriving (and being dropped, since the account
+  # didn't exist yet) *before* checkout.session.completed -- checkout.session.completed must
+  # still end up linking the subscription itself, using the subscription id Checkout already
+  # carries, rather than depending on that earlier event having succeeded.
+  import service as service_module
+  os.environ['STRIPE_OVERAGE_PRICE_ID']='price_overage9'
+  service_module.stripe_get=lambda path,key:{'items':{'data':[
+    {'id':'si_base9','price':{'id':'price_base9'}},
+    {'id':'si_overage9','price':{'id':'price_overage9'}}]}} if path=='subscriptions/sub_outoforder' else (_ for _ in ()).throw(AssertionError('unexpected path '+path))
+  os.environ['STRIPE_TEST_SECRET_KEY']='sk_test_fake'
+  try:
+   checkout={'type':'checkout.session.completed','data':{'object':{
+     'metadata':{'account':'outoforder','hub':'outoforder-hub1'},
+     'customer':'cus_outoforder','subscription':'sub_outoforder'}}}
+   r=handle_stripe_event(self.s,checkout)
+   self.assertEqual(r['action'],'provisioned')
+   self.assertEqual(self.s.stripe_subscription_item('outoforder'),'si_overage9')
+   self.assertEqual(self.s.stripe_account_state('outoforder'),{'subscription_id':'sub_outoforder','customer_id':'cus_outoforder'})
+  finally:
+   del os.environ['STRIPE_OVERAGE_PRICE_ID'];del os.environ['STRIPE_TEST_SECRET_KEY']
+ def test_checkout_completed_subscription_link_failure_does_not_block_provisioning(self):
+  import service as service_module
+  def boom(path,key):raise RuntimeError('stripe unreachable')
+  service_module.stripe_get=boom
+  os.environ['STRIPE_TEST_SECRET_KEY']='sk_test_fake'
+  try:
+   checkout={'type':'checkout.session.completed','data':{'object':{
+     'metadata':{'account':'linkfail','hub':'linkfail-hub1'},
+     'customer':'cus_linkfail','subscription':'sub_linkfail'}}}
+   r=handle_stripe_event(self.s,checkout)
+   self.assertEqual(r['action'],'provisioned')
+   self.assertIsNone(self.s.stripe_subscription_item('linkfail'))
+  finally:del os.environ['STRIPE_TEST_SECRET_KEY']
  def test_stripe_subscription_created_event(self):
   no_meta={'type':'customer.subscription.created','data':{'object':{'id':'sub_test1','items':{'data':[{'id':'si_test1'}]},'metadata':{}}}}
   self.assertEqual(handle_stripe_event(self.s,no_meta),{'action':'skipped','reason':'missing account metadata'})
