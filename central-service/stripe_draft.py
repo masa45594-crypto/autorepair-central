@@ -37,13 +37,16 @@ def post(path,data,key,identity):
     req=urllib.request.Request('https://api.stripe.com/v1/'+path,data=urllib.parse.urlencode(data).encode(),headers={'Authorization':'Bearer '+key,'Idempotency-Key':identity,'Content-Type':'application/x-www-form-urlencoded'},method='POST')
     with urllib.request.urlopen(req,timeout=20) as r:return json.load(r)
 
-def plan_checkout(account,hub,price_id,success_url,cancel_url,customer_email=None,base=10000,unit=100):
-    """Build the form fields for a subscription-mode Checkout Session covering only the
-    fixed base fee; usage-based billing stays on the existing send()/finalize()/deliver()
-    path. metadata is set on both the Session and the Subscription (via subscription_data)
-    with the same account/hub/base/unit so service.handle_stripe_event can read either."""
+def plan_checkout(account,hub,price_id,success_url,cancel_url,customer_email=None,base=10000,unit=100,overage_price_id=None):
+    """Build a subscription Checkout Session.
+
+    ``price_id`` is the fixed base subscription.  When ``overage_price_id`` is supplied,
+    it is a Billing Meter price and is added as a second subscription item.  Its quantity is
+    intentionally omitted: Stripe calculates it from meter events sent by service.py.
+    """
     if not all(re.fullmatch(r'[a-z0-9_-]{1,64}',x) for x in (account,hub)):raise ValueError('invalid account or hub id')
     if not re.fullmatch(r'price_[A-Za-z0-9]+',price_id):raise ValueError('a Stripe Price ID (price_...) is required')
+    if overage_price_id is not None and not re.fullmatch(r'price_[A-Za-z0-9]+',overage_price_id):raise ValueError('an overage Stripe Price ID (price_...) is required')
     for url in (success_url,cancel_url):
         if not re.fullmatch(r'https://\S+',url):raise ValueError('success_url/cancel_url must be https')
     if type(base) is not int or type(unit) is not int or min(base,unit)<0:raise ValueError('invalid pricing')
@@ -54,21 +57,38 @@ def plan_checkout(account,hub,price_id,success_url,cancel_url,customer_email=Non
           'metadata[account]':account,'metadata[hub]':hub,
           'metadata[base]':str(base),'metadata[unit]':str(unit)}
     if customer_email is not None:data['customer_email']=customer_email
+    if overage_price_id is not None:data['line_items[1][price]']=overage_price_id
     return data
 
-def create_checkout_session(account,hub,price_id,success_url,cancel_url,key,customer_email=None,base=10000,unit=100,transport=post):
+def create_checkout_session(account,hub,price_id,success_url,cancel_url,key,customer_email=None,base=10000,unit=100,overage_price_id=None,transport=post):
     """Create the Checkout Session a new customer would actually visit. TEST MODE ONLY.
     Does not deliver the resulting URL anywhere; the caller (not implemented yet) is
     responsible for presenting it to the customer."""
     if not key.startswith('sk_test_'):raise ValueError('Only sk_test_ keys allowed. Live billing is not implemented.')
-    data=plan_checkout(account,hub,price_id,success_url,cancel_url,customer_email,base,unit)
+    data=plan_checkout(account,hub,price_id,success_url,cancel_url,customer_email,base,unit,overage_price_id)
     # Stable per (account, hub, price): a retried click reuses the still-valid session
     # instead of spawning a new one; a fresh attempt long after expiry gets a new session
     # once Stripe's idempotency cache for the old key has lapsed.
-    identity=hashlib.sha256((account+'|'+hub+'|'+price_id).encode()).hexdigest()
+    identity=hashlib.sha256((account+'|'+hub+'|'+price_id+'|'+(overage_price_id or '')).encode()).hexdigest()
     r=transport('checkout/sessions',data,key,identity)
     if r.get('livemode') is not False or not re.fullmatch('cs_[A-Za-z0-9_]+',r.get('id','')) or not r.get('url'):raise ValueError('unexpected checkout session response')
     return {'id':r['id'],'url':r['url']}
+
+def record_meter_event(event_name,customer_id,value,key,identifier,transport=post):
+    """Record the latest overage count for a Stripe Billing Meter in test mode.
+
+    The configured meter uses ``last`` aggregation.  Therefore ``value`` must be the
+    *current* number of excess sites, not a running total or this period's peak.
+    """
+    if not key.startswith('sk_test_'):raise ValueError('Only sk_test_ keys allowed. Live billing is not implemented.')
+    if not re.fullmatch(r'[A-Za-z0-9_]{1,100}',event_name):raise ValueError('invalid meter event name')
+    if not re.fullmatch(r'cus_[A-Za-z0-9]+',customer_id):raise ValueError('a Stripe customer ID (cus_...) is required')
+    if type(value) is not int or value<0:raise ValueError('meter value must be a nonnegative integer')
+    if not re.fullmatch(r'[A-Za-z0-9_-]{1,100}',identifier):raise ValueError('invalid meter event identifier')
+    data={'event_name':event_name,'payload[stripe_customer_id]':customer_id,'payload[value]':str(value),'identifier':identifier}
+    r=transport('billing/meter_events',data,key,identifier)
+    if r.get('livemode') is not False or r.get('event_name')!=event_name:raise ValueError('unexpected meter event response')
+    return {'identifier':identifier,'value':value}
 
 def create_portal_session(customer,return_url,key,transport=post):
     """Create a Stripe Billing Portal session so an existing customer can manage or cancel
