@@ -66,10 +66,13 @@ def create_checkout_session(account,hub,price_id,success_url,cancel_url,key,cust
     responsible for presenting it to the customer."""
     if not key.startswith('sk_test_'):raise ValueError('Only sk_test_ keys allowed. Live billing is not implemented.')
     data=plan_checkout(account,hub,price_id,success_url,cancel_url,customer_email,base,unit,overage_price_id)
-    # Stable per (account, hub, price): a retried click reuses the still-valid session
-    # instead of spawning a new one; a fresh attempt long after expiry gets a new session
-    # once Stripe's idempotency cache for the old key has lapsed.
-    identity=hashlib.sha256((account+'|'+hub+'|'+price_id+'|'+(overage_price_id or '')).encode()).hexdigest()
+    # Stable per (account, hub, price, success/cancel URL): a retried click with the same
+    # destination reuses the still-valid session instead of spawning a new one. success_url
+    # and cancel_url are part of the key (not just account/hub/price) because Stripe rejects
+    # any reuse of an idempotency key with different request parameters (idempotency_error);
+    # a caller that legitimately needs a different redirect destination must not collide with
+    # an earlier attempt's cached session.
+    identity=hashlib.sha256((account+'|'+hub+'|'+price_id+'|'+(overage_price_id or '')+'|'+success_url+'|'+cancel_url).encode()).hexdigest()
     r=transport('checkout/sessions',data,key,identity)
     if r.get('livemode') is not False or not re.fullmatch('cs_[A-Za-z0-9_]+',r.get('id','')) or not r.get('url'):raise ValueError('unexpected checkout session response')
     return {'id':r['id'],'url':r['url']}
