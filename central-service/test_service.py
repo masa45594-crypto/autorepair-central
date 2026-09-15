@@ -2,7 +2,7 @@ import hashlib,hmac,json,os,re,tempfile,time,unittest,threading,urllib.request,u
 from pathlib import Path
 from http.server import HTTPServer
 from service import Store,Invalid,Conflict,Unauthorized,handler,digest,handle_stripe_event,sync_stripe_quantity
-from stripe_draft import plan,send,correct,verify_webhook,finalize,deliver,plan_checkout,create_checkout_session,create_portal_session,record_refund,sync_subscription_quantity
+from stripe_draft import plan,send,correct,verify_webhook,finalize,deliver,plan_checkout,create_checkout_session,create_portal_session,record_refund,sync_subscription_quantity,record_meter_event
 import mailer
 class Tests(unittest.TestCase):
  def setUp(self):
@@ -232,24 +232,28 @@ class Tests(unittest.TestCase):
     sync_stripe_quantity(self.s,'a',8)  # a Stripe failure must not raise (best-effort)
    finally:service_module.sync_subscription_quantity=original
   finally:del os.environ['STRIPE_TEST_SECRET_KEY']
- def test_snapshot_endpoint_syncs_stripe_quantity(self):
+ def test_snapshot_endpoint_reports_current_overage_to_meter(self):
   import service as service_module
-  self.s.set_stripe_subscription('a','sub_y','si_y')
-  calls=[];original=service_module.sync_subscription_quantity
-  service_module.sync_subscription_quantity=lambda item_id,quantity,key:calls.append((item_id,quantity))
+  self.s.set_stripe_customer('a','cus_y')
+  calls=[];original=service_module.record_meter_event
+  service_module.record_meter_event=lambda event,customer,value,key,identifier:calls.append((event,customer,value,key,identifier))
   os.environ['STRIPE_TEST_SECRET_KEY']='sk_test_fake'
+  os.environ['STRIPE_METER_EVENT_NAME']='managed_sites_overage'
   server=HTTPServer(('127.0.0.1',0),handler(self.s));thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
   try:
    url='http://127.0.0.1:'+str(server.server_port)
    req=urllib.request.Request(url+'/v1/snapshot',data=json.dumps({'sequence':1,'sites':self.ids[:2]}).encode(),headers={'Authorization':'Bearer '+self.a})
-   with urllib.request.urlopen(req) as res:self.assertEqual(json.load(res)['peak'],2)
-   self.assertEqual(calls,[('si_y',2)])
-   # account 'other' has no subscription on file: sync is a no-op, not an error.
+   with urllib.request.urlopen(req) as res:self.assertEqual(json.load(res)['current'],2)
+   self.assertEqual(calls[0][:4],('managed_sites_overage','cus_y',0,'sk_test_fake'))
+   req=urllib.request.Request(url+'/v1/snapshot',data=json.dumps({'sequence':2,'sites':self.ids}).encode(),headers={'Authorization':'Bearer '+self.a})
+   with urllib.request.urlopen(req) as res:self.assertEqual(json.load(res)['current'],4)
+   self.assertEqual(calls[1][:4],('managed_sites_overage','cus_y',0,'sk_test_fake'))
+   # account 'other' has no Stripe customer: reporting is a no-op, not an error.
    req2=urllib.request.Request(url+'/v1/snapshot',data=json.dumps({'sequence':1,'sites':self.ids[:1]}).encode(),headers={'Authorization':'Bearer '+self.other})
    with urllib.request.urlopen(req2) as res:self.assertEqual(json.load(res)['peak'],1)
-   self.assertEqual(calls,[('si_y',2)])
+   self.assertEqual(len(calls),2)
   finally:
-   service_module.sync_subscription_quantity=original;del os.environ['STRIPE_TEST_SECRET_KEY']
+   service_module.record_meter_event=original;del os.environ['STRIPE_TEST_SECRET_KEY'];del os.environ['STRIPE_METER_EVENT_NAME']
    server.shutdown();server.server_close();thread.join()
  def test_signup_page(self):
   server=HTTPServer(('127.0.0.1',0),handler(self.s));thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
@@ -332,6 +336,7 @@ class Tests(unittest.TestCase):
   data=plan_checkout('newco','hub1','price_abc','https://x/ok','https://x/cancel',base=5000,unit=50)
   self.assertEqual(data['mode'],'subscription')
   self.assertEqual(data['line_items[0][price]'],'price_abc')
+  self.assertEqual(plan_checkout('newco','hub1','price_abc','https://x/ok','https://x/cancel',overage_price_id='price_overage')['line_items[1][price]'],'price_overage')
   self.assertEqual(data['subscription_data[metadata][account]'],'newco')
   self.assertEqual(data['subscription_data[metadata][hub]'],'hub1')
   self.assertEqual(data['metadata[account]'],'newco')
@@ -347,6 +352,14 @@ class Tests(unittest.TestCase):
   self.assertEqual(r,{'id':'cs_test_123','url':'https://checkout.stripe.com/pay/cs_test_123'})
   def bad_transport(path,data,key,identity):return {'livemode':False,'id':'not-a-cs-id','url':'https://x'}
   with self.assertRaises(ValueError):create_checkout_session('newco','hub1','price_abc','https://x/ok','https://x/cancel','sk_test_fake',transport=bad_transport)
+ def test_meter_event_create(self):
+  with self.assertRaises(ValueError):record_meter_event('managed_sites_overage','cus_test',1,'sk_live_fake','id_1')
+  with self.assertRaises(ValueError):record_meter_event('bad-event','cus_test',1,'sk_test_fake','id_1')
+  def transport(path,data,key,identity):
+   self.assertEqual(path,'billing/meter_events')
+   self.assertEqual(data,{'event_name':'managed_sites_overage','payload[stripe_customer_id]':'cus_test','payload[value]':'3','identifier':'id_1'})
+   return {'livemode':False,'event_name':'managed_sites_overage'}
+  self.assertEqual(record_meter_event('managed_sites_overage','cus_test',3,'sk_test_fake','id_1',transport),{'identifier':'id_1','value':3})
  def test_portal_session_create(self):
   with self.assertRaises(ValueError):create_portal_session('cus_test','https://x/return','sk_live_fake')
   with self.assertRaises(ValueError):create_portal_session('not-a-customer','https://x/return','sk_test_fake')
