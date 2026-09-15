@@ -250,15 +250,29 @@ Authorization: Bearer <拠点(hub)トークン>
 - 既に有効(`active`/`trialing`/`past_due`/`unpaid`)なサブスクリプションがある状態で`test-checkout`を呼ぶと、Stripeへ都度問い合わせたうえで409を返します(二重契約の防止)
 - `test-status`は、記録済みのサブスクリプションIDがあればStripeへ都度問い合わせて最新状態を返します(Webhookの到着順崩れ対策)
 
-### 利用数のStripe同期(実装済み: サブスクリプション数量)
-請求書に1行追加する既存の方式(`stripe_draft.py`の`send`/`finalize`/`deliver`、運用者が手動実行)とは別に、**当月の最大サイト数を、Stripeのサブスクリプション明細行(subscription item)の数量へ自動反映**します。金額を動かす操作ではなく、Stripe側の表示をこちら側の実態に合わせるだけの同期です。
+### 利用数のStripe同期(実装済み: サブスクリプション数量、レガシー)
+請求書に1行追加する既存の方式(`stripe_draft.py`の`send`/`finalize`/`deliver`、運用者が手動実行)とは別に、`sync_stripe_quantity()`は当月の最大サイト数をStripeのサブスクリプション明細行(subscription item)の数量へ反映できます。**現在の`POST /v1/signup`・`/v1/stripe/test-checkout`の申込みフローはこちらを使いません**(下記のBilling Meter方式に置き換え済み)。古い1明細行構成のテスト・呼び出し元との互換性のためだけに残っています。
 
-- `checkout.session.completed`に続けて届く`customer.subscription.created`イベントから、サブスクリプションID・明細行ID(`si_...`)を`accounts`テーブルへ記録します(1明細行のみの構成を前提)
-- 拠点(hub)が`POST /v1/snapshot`を送信するたびに、その周期の最新peakを`stripe_draft.sync_subscription_quantity()`で明細行の数量へ反映します(`proration_behavior=none`で日割り課金は発生させません)
-- サブスクリプション未記録・`STRIPE_TEST_SECRET_KEY`未設定・Stripe側の一時的な失敗は、いずれも黙ってスキップします(拠点の同期応答自体は失敗させません。ピークは既にローカルへ確定記録済みのため、Stripe側の反映が後から追いつけば十分という考え方です)
+### 基本料金+従量課金(実装済み: Stripe Billing Meter)
+基本料金(固定額、`STRIPE_PRICE_ID`)に加えて、**Stripeの従量課金機能(Billing Meters)**で「Nサイトまで無料、それ以降1サイトごとに追加料金」という価格をCheckoutへ追加できます。
 
-**まだ実装していない、残りの部分**:
-- なし(このセクションで計画していた項目は完了)
+**Stripeダッシュボード側で事前に必要な準備**:
+1. 商品の価格を追加作成する際、価格モデルで「Usage is metered」をONにし、対応する**Meter(例: `managed_sites_overage`)**を作成/選択する
+2. 作成したその価格のID(`price_...`)を控える
+3. そのMeterの**Event name**(ダッシュボードの表示名ではなく、APIに渡す内部名)を控える
+
+**Render環境変数**(いずれも未設定なら黙って従量課金なしの動作にフォールバックします。エラーにはなりませんが、設定漏れに気付きにくいので要確認):
+
+| 環境変数 | 内容 |
+|---|---|
+| `STRIPE_OVERAGE_PRICE_ID` | 上記2の価格ID(`price_...`)。設定するとCheckout Sessionの2つ目の明細行として追加されます(数量は指定しません。Stripe側がMeterイベントから算出するため) |
+| `STRIPE_METER_EVENT_NAME` | 上記3のMeterのEvent name。**これが無いと`sync_stripe_meter()`は何もせず黙って終わります**(エラーにならないので気付きにくい: 基本料金だけが請求され、従量課金分がいつまでも$0のままになります) |
+| `STRIPE_INCLUDED_SITES` | 無料に含めるサイト数(既定10)。これを超えた分だけがMeterへ報告されます |
+| `STRIPE_TEST_SECRET_KEY`(または`STRIPE_SECRET_KEY`) | 既存のテスト秘密鍵。どちらの名前でも動きます(`stripe_secret_key()`が両方を見ます) |
+
+**動作**: 拠点(hub)が`POST /v1/snapshot`を送信するたびに、`service.sync_stripe_meter()`が「現在のサイト数 − `STRIPE_INCLUDED_SITES`」(0未満は0)を、Stripeの`billing/meter_events`へ`last`集計の値として報告します(`stripe_draft.record_meter_event()`)。同一スナップショットの再送は同じidentifierになるため、二重計上しません。Stripe側の一時的な失敗や`STRIPE_METER_EVENT_NAME`未設定は、いずれも黙ってスキップします(拠点の同期応答自体は失敗させません)。
+
+`customer.subscription.created`webhookを受けるとcustomer IDは記録されますが、Checkout完了時点(`checkout.session.completed`)で`store.set_stripe_customer()`によりcustomer IDを先に記録するため、Webhookの到着順が入れ替わってもMeterへの報告に支障はありません。
 
 ### Customer Portalへの公開導線(実装済み: 管理用リンク方式)
 フルのログイン機構(会員登録・パスワード・セッション管理)は作らず、既存の`hub_token`と同じ「持っていれば使えるベアラートークン」方式で本人確認を代替しています。
@@ -298,7 +312,7 @@ Authorization: Bearer <管理用トークン>
 SMTP環境変数が未設定の場合は送信自体が失敗として扱われ(`email_delivered: false`)、provisionだけは成功します。`MANAGE_BASE_URL`を設定していれば、同じメールに管理用リンク(上記「Customer Portalへの公開導線」参照)も含まれます。
 
 ## 商用化の次工程
-済み: 価格・課金対象・締日(契約日基準)・遅延受付期限(72時間)・訂正(下書き段階のみ)・返金(全額・部分返金、記録のみ)・拠点トークンの失効化・確定/送信(テストモード、send_invoiceのみ)・Webhook署名検証と受信エンドポイント・Webhookからの自動provision/自動suspend配線・支払い結果の自動記録と滞納自動suspend/unsuspend(理由追跡付き)・**支出上限(警告表示のみ)**・Checkout Session作成関数・テスト購入画面`GET /signup`と公開申込エンドポイント`POST /v1/signup`(レート制限込み)・hub_tokenのメール自動配達・Customer Portalへの公開導線(管理用リンク方式)・複数拠点の自己追加(`POST /v1/manage/hubs`)・**既存拠点の自己アップグレード(WordPress管理画面互換、`/v1/stripe/test-checkout`・`test-status`・`test-portal`)**・**利用数のStripeサブスクリプション数量への自動同期**・データの信頼性向上(WAL・バックアップ・整合性チェック、SQLiteのまま)・負荷検証(ThreadingHTTPServerへの切り替えで接続拒否を解消)。
+済み: 価格・課金対象・締日(契約日基準)・遅延受付期限(72時間)・訂正(下書き段階のみ)・返金(全額・部分返金、記録のみ)・拠点トークンの失効化・確定/送信(テストモード、send_invoiceのみ)・Webhook署名検証と受信エンドポイント・Webhookからの自動provision/自動suspend配線・支払い結果の自動記録と滞納自動suspend/unsuspend(理由追跡付き)・**支出上限(警告表示のみ)**・Checkout Session作成関数・テスト購入画面`GET /signup`と公開申込エンドポイント`POST /v1/signup`(レート制限込み)・hub_tokenのメール自動配達・Customer Portalへの公開導線(管理用リンク方式)・複数拠点の自己追加(`POST /v1/manage/hubs`)・**既存拠点の自己アップグレード(WordPress管理画面互換、`/v1/stripe/test-checkout`・`test-status`・`test-portal`)**・**基本料金+Stripe Billing Meterによる従量課金(`STRIPE_OVERAGE_PRICE_ID`・`STRIPE_METER_EVENT_NAME`)**・データの信頼性向上(WAL・バックアップ・整合性チェック、SQLiteのまま)・負荷検証(ThreadingHTTPServerへの切り替えで接続拒否を解消)。
 決定済みで今回は実装しない: 本格的なPostgreSQL移行(複数インスタンス化が必要になるまで)、本格的なログイン機構(会員登録・パスワード。代わりにベアラー式の管理用トークンで自己サービスを実現)。
 残り: **実環境での結線テスト**(テストモードのStripeカードで、購入→サブスクリプション作成→サイト数変更に伴う数量同期→支払い失敗/解約時の新規登録停止、までを通しで確認)。コードとしては揃っていますが、`STRIPE_SECRET_KEY`・`STRIPE_WEBHOOK_SECRET`をRenderへ設定し、Stripeダッシュボード側のWebhook宛先登録を済ませてからでないと検証できません。ここまでで**自己申込から利用開始・契約管理(拠点追加・解約・支出上限設定)・滞納の自動処理・訂正・返金・Stripe数量同期までの一連の流れの部品が揃いました**。実際に使うにはStripeダッシュボードでの商品/価格作成・SMTP設定・`MANAGE_BASE_URL`等の環境変数設定も必要です。
 この版のSQLite・全件スナップショット・WordPressオプション送信待ちは小規模検証向けです。10万件という入力上限は処理実績ではありません。
