@@ -6,8 +6,11 @@ import urllib.error, urllib.request
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
-from stripe_draft import verify_webhook, create_checkout_session, create_portal_session, sync_subscription_quantity
+from stripe_draft import verify_webhook, create_checkout_session, create_portal_session, sync_subscription_quantity as _legacy_sync_subscription_quantity, record_meter_event
 import mailer
+
+# Kept as a module name for compatibility with the earlier test-only per-seat adapter.
+sync_subscription_quantity=_legacy_sync_subscription_quantity
 
 class Invalid(Exception): pass
 class Conflict(Exception): pass
@@ -149,6 +152,16 @@ class Store:
             if not row:raise Invalid('unknown account')
             c.execute('UPDATE accounts SET stripe_subscription_id=?,stripe_subscription_item_id=?,stripe_customer_id=? WHERE id=?',
                       (subscription_id,item_id,customer_id or row['stripe_customer_id'],account))
+    def set_stripe_customer(self,account,customer_id):
+        """Persist the Checkout customer as soon as it exists.
+
+        Checkout and subscription webhooks can arrive in either order.  Meter events only
+        need the customer ID, so do not wait for a subscription-item webhook.
+        """
+        if not re.fullmatch(r'cus_[A-Za-z0-9]+',customer_id):raise Invalid('invalid stripe customer id')
+        with self.db() as c:
+            if not c.execute('SELECT 1 FROM accounts WHERE id=?',(account,)).fetchone():raise Invalid('unknown account')
+            c.execute('UPDATE accounts SET stripe_customer_id=? WHERE id=?',(customer_id,account))
     def stripe_subscription_item(self,account):
         with self.db() as c:
             row=c.execute('SELECT stripe_subscription_item_id FROM accounts WHERE id=?',(account,)).fetchone()
@@ -300,6 +313,7 @@ def handle_stripe_event(store,event):
             manage_url=None
             stripe_customer=obj.get('customer')
             if stripe_customer:
+                store.set_stripe_customer(account,stripe_customer)
                 manage_token=store.issue_management_token(account,stripe_customer)
                 manage_base=os.environ.get('MANAGE_BASE_URL','')
                 if manage_base:manage_url=manage_base.rstrip('/')+'/v1/manage/portal?token='+manage_token
@@ -346,16 +360,49 @@ def handle_stripe_event(store,event):
         return {'action':'skipped','reason':'invalid or unknown account/hub in metadata'}
     return {'action':'recorded'}
 
+def stripe_secret_key():
+    """Accept the current Render variable name during the test-only migration.
+
+    ``STRIPE_TEST_SECRET_KEY`` is preferred; ``STRIPE_SECRET_KEY`` is retained only as a
+    backward-compatible alias for the existing Render service.  All Stripe adapters still
+    reject any key other than ``sk_test_...``.
+    """
+    return os.environ.get('STRIPE_TEST_SECRET_KEY') or os.environ.get('STRIPE_SECRET_KEY','')
+
+def included_sites():
+    raw=os.environ.get('STRIPE_INCLUDED_SITES','10')
+    try:value=int(raw)
+    except (TypeError,ValueError):raise ValueError('STRIPE_INCLUDED_SITES must be an integer')
+    if not 0<=value<=100000:return (_ for _ in ()).throw(ValueError('STRIPE_INCLUDED_SITES is out of range'))
+    return value
+
 def sync_stripe_quantity(store,account,peak):
-    """Best-effort: push this account's current-period peak onto its Stripe subscription
-    item's quantity, if one is on file and a test secret key is configured. A Stripe hiccup
-    here must not fail the hub's own snapshot/status response -- the peak is already durably
-    recorded locally; this is just keeping Stripe's view in sync with it."""
-    key=os.environ.get('STRIPE_TEST_SECRET_KEY','')
+    """Legacy per-seat synchronizer retained only for old callers/tests.
+
+    New Checkout subscriptions use ``sync_stripe_meter`` instead, because the base price
+    must remain quantity one while the separate metered price receives the overage count.
+    """
+    key=stripe_secret_key()
     if not key:return
     item_id=store.stripe_subscription_item(account)
     if not item_id:return
     try:sync_subscription_quantity(item_id,peak,key)
+    except Exception:pass
+
+def sync_stripe_meter(store,account,period,current,sequence):
+    """Best-effort report of the *current* extra-site count to the Billing Meter.
+
+    The Dashboard meter is configured with ``last`` aggregation.  Replaying the same
+    snapshot uses a stable identifier, so a retry cannot add another site's worth of usage.
+    A Stripe outage never makes WordPress synchronization fail; the next snapshot retries.
+    """
+    key=stripe_secret_key();event_name=os.environ.get('STRIPE_METER_EVENT_NAME','')
+    if not (key and event_name):return
+    state=store.stripe_account_state(account);customer=state['customer_id']
+    if not customer:return
+    overage=max(0,current-included_sites())
+    identifier='arai_'+digest(account+'|'+period+'|'+str(sequence)+'|'+str(overage))[:48]
+    try:record_meter_event(event_name,customer,overage,key,identifier)
     except Exception:pass
 
 def stripe_get(path,key):
@@ -393,7 +440,7 @@ def handler(store):
                     # /v1/signup and redirects to the Checkout URL that returns. Same
                     # configuration gate as /v1/signup, so an unfinished deployment doesn't
                     # advertise a half-built signup flow.
-                    if not all(os.environ.get(k) for k in ('STRIPE_PRICE_ID','SIGNUP_SUCCESS_URL','SIGNUP_CANCEL_URL','STRIPE_TEST_SECRET_KEY')):return self.reply(404,{'error':'not_found'})
+                    if not all((os.environ.get('STRIPE_PRICE_ID'),os.environ.get('SIGNUP_SUCCESS_URL'),os.environ.get('SIGNUP_CANCEL_URL'),stripe_secret_key())):return self.reply(404,{'error':'not_found'})
                     body=SIGNUP_PAGE_HTML.encode('utf-8')
                     self.send_response(200);self.send_header('Content-Type','text/html; charset=utf-8');self.send_header('Cache-Control','no-store');self.send_header('Content-Length',str(len(body)));self.end_headers();self.wfile.write(body);return
                 elif self.command=='GET' and self.path.startswith('/v1/manage/portal'):
@@ -401,7 +448,7 @@ def handler(store):
                     # Bearer-style auth via query param, since there is no login/session
                     # system; the management token itself is the credential (see
                     # handle_stripe_event and Store.issue_management_token).
-                    return_url=os.environ.get('PORTAL_RETURN_URL','');key=os.environ.get('STRIPE_TEST_SECRET_KEY','')
+                    return_url=os.environ.get('PORTAL_RETURN_URL','');key=stripe_secret_key()
                     if not (return_url and key):return self.reply(404,{'error':'not_found'})
                     mtoken=(parse_qs(urlparse(self.path).query).get('token') or [''])[0]
                     with store.db() as c:row=store.auth_management(c,mtoken)
@@ -429,7 +476,7 @@ def handler(store):
                     size=int(self.headers.get('Content-Length','0'))
                     if not 0<size<=8000000:raise Invalid('payload size')
                     r=store.snapshot(token,json.loads(self.rfile.read(size)))
-                    sync_stripe_quantity(store,h['account'],r['peak'])
+                    sync_stripe_meter(store,h['account'],r['month'],r['current'],r['sequence'])
                 elif self.command=='POST' and self.path=='/v1/stripe/test-checkout':
                     # Compatibility shim for an already-connected hub upgrading itself to a
                     # paid plan from inside its own WordPress admin -- distinct from the
@@ -441,7 +488,7 @@ def handler(store):
                     # provisioned, so /v1/signup's own provisioning step on
                     # checkout.session.completed just no-ops for it (hub already exists).
                     with store.db() as c:h=store.auth(c,token)
-                    key=os.environ.get('STRIPE_TEST_SECRET_KEY','');price_id=os.environ.get('STRIPE_PRICE_ID','')
+                    key=stripe_secret_key();price_id=os.environ.get('STRIPE_PRICE_ID','')
                     if not (key and price_id):raise RuntimeError('Stripe test checkout is not configured')
                     size=int(self.headers.get('Content-Length','0'))
                     if not 0<size<=4000:raise Invalid('payload size')
@@ -452,14 +499,14 @@ def handler(store):
                     if state['subscription_id']:
                         live=stripe_get('subscriptions/'+state['subscription_id'],key)
                         if live.get('status') in ('active','trialing','past_due','unpaid'):raise Conflict()
-                    session=create_checkout_session(h['account'],h['id'],price_id,success_url,cancel_url,key)
+                    session=create_checkout_session(h['account'],h['id'],price_id,success_url,cancel_url,key,overage_price_id=os.environ.get('STRIPE_OVERAGE_PRICE_ID') or None)
                     r={'mode':'test','checkout_url':session['url']}
                 elif self.command=='GET' and self.path=='/v1/stripe/test-status':
                     # Same shim family as test-checkout above: status for the hub's own
                     # account, re-verified live against Stripe rather than trusting whatever a
                     # possibly-delayed or out-of-order webhook last recorded locally.
                     with store.db() as c:h=store.auth(c,token)
-                    key=os.environ.get('STRIPE_TEST_SECRET_KEY','')
+                    key=stripe_secret_key()
                     state=store.stripe_account_state(h['account'])
                     if not (key and state['subscription_id']):
                         r={'mode':'test','subscription_status':'none','updated':utc(),'cancellation_pending':False,'cancellation_at':0}
@@ -477,7 +524,7 @@ def handler(store):
                     # handle_stripe_event) rather than the management-token flow above, which
                     # only exists for accounts created through the public /v1/signup path.
                     with store.db() as c:h=store.auth(c,token)
-                    key=os.environ.get('STRIPE_TEST_SECRET_KEY','')
+                    key=stripe_secret_key()
                     size=int(self.headers.get('Content-Length','0'))
                     if not 0<size<=4000:raise Invalid('payload size')
                     body=json.loads(self.rfile.read(size))
@@ -537,7 +584,7 @@ def handler(store):
                     # 404s instead of 401 when unconfigured, so an unfinished deployment
                     # doesn't advertise a half-built signup flow.
                     price_id=os.environ.get('STRIPE_PRICE_ID','');success_url=os.environ.get('SIGNUP_SUCCESS_URL','')
-                    cancel_url=os.environ.get('SIGNUP_CANCEL_URL','');key=os.environ.get('STRIPE_TEST_SECRET_KEY','')
+                    cancel_url=os.environ.get('SIGNUP_CANCEL_URL','');key=stripe_secret_key()
                     if not (price_id and success_url and cancel_url and key):return self.reply(404,{'error':'not_found'})
                     if rate_limited(self.client_address[0]):return self.reply(429,{'error':'rate_limited'})
                     size=int(self.headers.get('Content-Length','0'))
@@ -550,7 +597,7 @@ def handler(store):
                     # guessing or colliding with an existing customer.
                     account='acct-'+secrets.token_hex(8);hub='hub-'+secrets.token_hex(8)
                     base=int(os.environ.get('SIGNUP_BASE','10000'));unit=int(os.environ.get('SIGNUP_UNIT','100'))
-                    session=create_checkout_session(account,hub,price_id,success_url,cancel_url,key,customer_email=email,base=base,unit=unit)
+                    session=create_checkout_session(account,hub,price_id,success_url,cancel_url,key,customer_email=email,base=base,unit=unit,overage_price_id=os.environ.get('STRIPE_OVERAGE_PRICE_ID') or None)
                     r={'url':session['url']}
                 else:return self.reply(404,{'error':'not_found'})
                 self.reply(200,r)
