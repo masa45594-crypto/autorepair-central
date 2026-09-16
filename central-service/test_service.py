@@ -1,8 +1,8 @@
 import hashlib,hmac,json,os,re,tempfile,time,unittest,threading,urllib.request,urllib.error
 from pathlib import Path
 from http.server import HTTPServer
-from service import Store,Invalid,Conflict,Unauthorized,handler,digest,handle_stripe_event,sync_stripe_quantity
-from stripe_draft import plan,send,correct,verify_webhook,finalize,deliver,plan_checkout,create_checkout_session,create_portal_session,record_refund,sync_subscription_quantity,record_meter_event
+from service import Store,Invalid,Conflict,Unauthorized,handler,digest,handle_stripe_event
+from stripe_draft import plan,send,correct,verify_webhook,finalize,deliver,plan_checkout,create_checkout_session,create_portal_session,record_refund,record_meter_event
 import mailer
 class Tests(unittest.TestCase):
  def setUp(self):
@@ -241,31 +241,6 @@ class Tests(unittest.TestCase):
   self.assertEqual(self.s.stripe_subscription_item('a'),'si_test1')
   unknown={'type':'customer.subscription.created','data':{'object':{'id':'sub_test2','items':{'data':[{'id':'si_test2'}]},'metadata':{'account':'no-such-account'}}}}
   self.assertEqual(handle_stripe_event(self.s,unknown),{'action':'skipped','reason':'invalid or unknown account/hub in metadata'})
- def test_sync_subscription_quantity(self):
-  with self.assertRaises(ValueError):sync_subscription_quantity('si_test1',5,'sk_live_fake')
-  with self.assertRaises(ValueError):sync_subscription_quantity('not-an-item',5,'sk_test_fake')
-  with self.assertRaises(ValueError):sync_subscription_quantity('si_test1',-1,'sk_test_fake')
-  def transport(path,data,key,identity):
-   self.assertEqual(path,'subscription_items/si_test1');self.assertEqual(data,{'quantity':5,'proration_behavior':'none'});return {'livemode':False,'id':'si_test1','quantity':5}
-  r=sync_subscription_quantity('si_test1',5,'sk_test_fake',transport=transport);self.assertEqual(r,{'id':'si_test1','quantity':5})
-  def bad_transport(path,data,key,identity):return {'livemode':False,'id':'si_other','quantity':5}
-  with self.assertRaises(ValueError):sync_subscription_quantity('si_test1',5,'sk_test_fake',transport=bad_transport)
- def test_sync_stripe_quantity_helper(self):
-  import service as service_module
-  sync_stripe_quantity(self.s,'a',5)  # no STRIPE_TEST_SECRET_KEY configured: silent no-op
-  os.environ['STRIPE_TEST_SECRET_KEY']='sk_test_fake'
-  try:
-   sync_stripe_quantity(self.s,'a',5)  # no subscription item on file yet: silent no-op
-   self.s.set_stripe_subscription('a','sub_x','si_x')
-   calls=[];original=service_module.sync_subscription_quantity
-   service_module.sync_subscription_quantity=lambda item_id,quantity,key:calls.append((item_id,quantity,key))
-   try:
-    sync_stripe_quantity(self.s,'a',7);self.assertEqual(calls,[('si_x',7,'sk_test_fake')])
-    def boom(*a,**k):raise RuntimeError('stripe unreachable')
-    service_module.sync_subscription_quantity=boom
-    sync_stripe_quantity(self.s,'a',8)  # a Stripe failure must not raise (best-effort)
-   finally:service_module.sync_subscription_quantity=original
-  finally:del os.environ['STRIPE_TEST_SECRET_KEY']
  def test_snapshot_endpoint_reports_current_overage_to_meter(self):
   import service as service_module
   self.s.set_stripe_customer('a','cus_y')

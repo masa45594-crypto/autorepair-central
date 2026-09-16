@@ -250,9 +250,6 @@ Authorization: Bearer <拠点(hub)トークン>
 - 既に有効(`active`/`trialing`/`past_due`/`unpaid`)なサブスクリプションがある状態で`test-checkout`を呼ぶと、Stripeへ都度問い合わせたうえで409を返します(二重契約の防止)
 - `test-status`は、記録済みのサブスクリプションIDがあればStripeへ都度問い合わせて最新状態を返します(Webhookの到着順崩れ対策)
 
-### 利用数のStripe同期(実装済み: サブスクリプション数量、レガシー)
-請求書に1行追加する既存の方式(`stripe_draft.py`の`send`/`finalize`/`deliver`、運用者が手動実行)とは別に、`sync_stripe_quantity()`は当月の最大サイト数をStripeのサブスクリプション明細行(subscription item)の数量へ反映できます。**現在の`POST /v1/signup`・`/v1/stripe/test-checkout`の申込みフローはこちらを使いません**(下記のBilling Meter方式に置き換え済み)。古い1明細行構成のテスト・呼び出し元との互換性のためだけに残っています。
-
 ### 基本料金+従量課金(実装済み: Stripe Billing Meter)
 基本料金(固定額、`STRIPE_PRICE_ID`)に加えて、**Stripeの従量課金機能(Billing Meters)**で「Nサイトまで無料、それ以降1サイトごとに追加料金」という価格をCheckoutへ追加できます。
 

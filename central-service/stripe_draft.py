@@ -109,20 +109,6 @@ def create_portal_session(customer,return_url,key,transport=post):
     if r.get('livemode') is not False or not re.fullmatch('bps_[A-Za-z0-9_]+',r.get('id','')) or not r.get('url'):raise ValueError('unexpected portal session response')
     return {'id':r['id'],'url':r['url']}
 
-def sync_subscription_quantity(item_id,quantity,key,transport=post):
-    """Set a subscription item's quantity to the account's current-period peak site count,
-    so the Stripe subscription itself reflects usage (licensed/per-seat style) instead of a
-    separate invoice line. TEST MODE ONLY. proration_behavior=none: this mirrors an observed
-    fact, not a mid-cycle plan change, so it must never generate a surprise proration charge."""
-    if not key.startswith('sk_test_'):raise ValueError('Only sk_test_ keys allowed. Live billing is not implemented.')
-    if not re.fullmatch('si_[A-Za-z0-9]+',item_id):raise ValueError('a Stripe subscription item ID (si_...) is required')
-    if type(quantity) is not int or quantity<0:raise ValueError('quantity must be a nonnegative integer')
-    # Idempotent per (item, quantity): a retried or repeated sync of an unchanged peak is a no-op.
-    identity=hashlib.sha256((item_id+'|'+str(quantity)).encode()).hexdigest()
-    r=transport('subscription_items/'+item_id,{'quantity':quantity,'proration_behavior':'none'},key,identity)
-    if r.get('livemode') is not False or r.get('id')!=item_id:raise ValueError('unexpected subscription item response')
-    return {'id':r['id'],'quantity':r.get('quantity')}
-
 def send(usage,customer,state_dir,key,transport=post):
     if not key.startswith('sk_test_'):raise ValueError('Only sk_test_ keys allowed. Live billing is not implemented.')
     payload=plan(usage,customer);fingerprint=hashlib.sha256(json.dumps(payload,sort_keys=True).encode()).hexdigest()

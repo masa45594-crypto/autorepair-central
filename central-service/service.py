@@ -6,11 +6,8 @@ import urllib.error, urllib.request
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
-from stripe_draft import verify_webhook, create_checkout_session, create_portal_session, sync_subscription_quantity as _legacy_sync_subscription_quantity, record_meter_event
+from stripe_draft import verify_webhook, create_checkout_session, create_portal_session, record_meter_event
 import mailer
-
-# Kept as a module name for compatibility with the earlier test-only per-seat adapter.
-sync_subscription_quantity=_legacy_sync_subscription_quantity
 
 class Invalid(Exception): pass
 class Conflict(Exception): pass
@@ -140,10 +137,8 @@ class Store:
         if not row:raise Unauthorized()
         return row
     def set_stripe_subscription(self,account,subscription_id,item_id,customer_id=None,now=None):
-        # Recorded once at subscription creation so later usage snapshots know which Stripe
-        # subscription item's quantity to keep in sync (see sync_subscription_quantity), and
-        # so an existing hub's own status/portal shim (see handler()) knows which customer
-        # and subscription to ask Stripe about later.
+        # Recorded once at subscription creation so an existing hub's own status/portal shim
+        # (see handler()) knows which customer and subscription to ask Stripe about later.
         if not re.fullmatch(r'sub_[A-Za-z0-9]+',subscription_id):raise Invalid('invalid stripe subscription id')
         if not re.fullmatch(r'si_[A-Za-z0-9]+',item_id):raise Invalid('invalid stripe subscription item id')
         if customer_id is not None and not re.fullmatch(r'cus_[A-Za-z0-9]+',customer_id):raise Invalid('invalid stripe customer id')
@@ -402,19 +397,6 @@ def included_sites():
     except (TypeError,ValueError):raise ValueError('STRIPE_INCLUDED_SITES must be an integer')
     if not 0<=value<=100000:return (_ for _ in ()).throw(ValueError('STRIPE_INCLUDED_SITES is out of range'))
     return value
-
-def sync_stripe_quantity(store,account,peak):
-    """Legacy per-seat synchronizer retained only for old callers/tests.
-
-    New Checkout subscriptions use ``sync_stripe_meter`` instead, because the base price
-    must remain quantity one while the separate metered price receives the overage count.
-    """
-    key=stripe_secret_key()
-    if not key:return
-    item_id=store.stripe_subscription_item(account)
-    if not item_id:return
-    try:sync_subscription_quantity(item_id,peak,key)
-    except Exception:pass
 
 def sync_stripe_meter(store,account,period,current,sequence):
     """Best-effort report of the *current* extra-site count to the Billing Meter.
