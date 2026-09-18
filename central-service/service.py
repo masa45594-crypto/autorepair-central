@@ -77,6 +77,10 @@ class Store:
             except sqlite3.OperationalError: pass
             try: c.execute("ALTER TABLE accounts ADD COLUMN stripe_customer_id TEXT NOT NULL DEFAULT ''")
             except sqlite3.OperationalError: pass
+            try: c.execute("ALTER TABLE accounts ADD COLUMN last_webhook_type TEXT NOT NULL DEFAULT ''")
+            except sqlite3.OperationalError: pass
+            try: c.execute("ALTER TABLE accounts ADD COLUMN last_webhook_at TEXT NOT NULL DEFAULT ''")
+            except sqlite3.OperationalError: pass
     @contextlib.contextmanager
     def db(self):
         c=sqlite3.connect(self.path,timeout=15,isolation_level=None);c.row_factory=sqlite3.Row
@@ -161,6 +165,18 @@ class Store:
         with self.db() as c:
             row=c.execute('SELECT stripe_subscription_item_id FROM accounts WHERE id=?',(account,)).fetchone()
             return row['stripe_subscription_item_id'] or None if row else None
+    def record_webhook(self,account,etype,now=None):
+        """Best-effort marker of 'this account has actually received a verified webhook',
+        for the WordPress-side contract-check screen. A no-op (0 rows) if the account
+        doesn't exist yet -- callers only invoke this once the account is guaranteed to
+        exist (see handle_stripe_event)."""
+        with self.db() as c:
+            c.execute('UPDATE accounts SET last_webhook_type=?,last_webhook_at=? WHERE id=?',(etype,now or utc(),account))
+    def webhook_state(self,account):
+        with self.db() as c:
+            row=c.execute('SELECT last_webhook_type,last_webhook_at FROM accounts WHERE id=?',(account,)).fetchone()
+            if not row:raise Invalid('unknown account')
+            return {'last_webhook_type':row['last_webhook_type'] or None,'last_webhook_at':row['last_webhook_at'] or None}
     def stripe_account_state(self,account):
         # subscription_id/customer_id on file for this account, if any -- used by the
         # existing-hub self-upgrade shim (see handler()) to re-check live Stripe status and
@@ -244,8 +260,9 @@ class Store:
         stale=c.execute("SELECT COUNT(*) FROM hubs WHERE account=? AND revoked='' AND (updated='' OR updated<?)",(h['account'],datetime.fromtimestamp(datetime.fromisoformat(now).timestamp()-7200,timezone.utc).isoformat())).fetchone()[0]
         cap=c.execute('SELECT spending_cap FROM accounts WHERE id=?',(h['account'],)).fetchone()['spending_cap']
         estimate=m['base']+m['peak']*m['unit']
+        current=self.count(c,h['account'])
         # Warning only: a cap never blocks new site registrations or usage (see README).
-        return dict(mode='pilot',month=period,current=self.count(c,h['account']),peak=m['peak'],base_yen=m['base'],unit_yen=m['unit'],estimate_yen=estimate,currency='jpy',stale_hubs=stale,sequence=h['sequence'],observed_at=now,billable=False,spending_cap_yen=cap,over_spending_cap=bool(cap) and estimate>cap)
+        return dict(mode='pilot',month=period,current=current,peak=m['peak'],base_yen=m['base'],unit_yen=m['unit'],estimate_yen=estimate,currency='jpy',stale_hubs=stale,sequence=h['sequence'],observed_at=now,billable=False,spending_cap_yen=cap,over_spending_cap=bool(cap) and estimate>cap,overage_sites=max(0,current-included_sites()))
     def status(self,token,now=None):
         now=now or utc()
         with self.db() as c:
@@ -348,6 +365,7 @@ def handle_stripe_event(store,event):
                     mailer.send(email,'ご利用開始のご案内',mailer.hub_token_email_body(account,hub,token,manage_url))
                     delivered=True
                 except Exception:delivered=False
+            store.record_webhook(account,etype)
             return {'action':'provisioned','account':account,'hub':hub,'hub_token':token,'email_delivered':delivered}
         if etype=='customer.subscription.created':
             account=meta.get('account')
@@ -356,11 +374,13 @@ def handle_stripe_event(store,event):
             item_id=_overage_item_id(items)
             if not subscription_id or not item_id:return {'action':'skipped','reason':'missing subscription or item id'}
             store.set_stripe_subscription(account,subscription_id,item_id,customer_id=obj.get('customer'))
+            store.record_webhook(account,etype)
             return {'action':'subscription_linked','account':account,'subscription':subscription_id}
         if etype=='customer.subscription.deleted':
             account=meta.get('account')
             if not account:return {'action':'skipped','reason':'missing account metadata'}
             store.suspend(account,reason='subscription_canceled')
+            store.record_webhook(account,etype)
             return {'action':'suspended','account':account}
         if etype in ('invoice.paid','invoice.payment_failed'):
             account=meta.get('account');month=meta.get('month')
@@ -375,6 +395,7 @@ def handle_stripe_event(store,event):
                 # Only reverse our own automatic suspend; a manual one (e.g. abuse) stands.
                 with store.db() as c:acc=c.execute('SELECT suspend_reason FROM accounts WHERE id=?',(account,)).fetchone()
                 if acc and acc['suspend_reason']=='payment_failed':store.unsuspend(account);dunning='unsuspended'
+            store.record_webhook(account,etype)
             return {'action':'payment_recorded','account':account,'month':month,'status':status,'dunning_action':dunning}
     except sqlite3.IntegrityError:
         return {'action':'skipped','reason':'hub already provisioned'}
@@ -421,6 +442,24 @@ def stripe_get(path,key):
     try:
         with urllib.request.urlopen(req,timeout=20) as r:return json.load(r)
     except (urllib.error.URLError,urllib.error.HTTPError,ValueError):raise RuntimeError('Stripe request failed')
+
+_overage_price_cache={}
+def overage_price_info(key):
+    """Unit amount/currency of STRIPE_OVERAGE_PRICE_ID, for the WordPress contract-check
+    screen's 'expected overage charge' line. Cached for an hour (module-level, per-process)
+    since the Price object practically never changes and this would otherwise mean one
+    extra Stripe call on every test-status check."""
+    price_id=os.environ.get('STRIPE_OVERAGE_PRICE_ID','')
+    if not price_id:return None
+    cached=_overage_price_cache.get(price_id)
+    if cached and time.time()-cached[0]<3600:return cached[1]
+    try:
+        price=stripe_get('prices/'+price_id,key)
+        info={'unit_amount':price.get('unit_amount'),'currency':price.get('currency')}
+        if type(info['unit_amount']) is not int or not isinstance(info['currency'],str):return None
+    except Exception:return None
+    _overage_price_cache[price_id]=(time.time(),info)
+    return info
 
 def handler(store):
     # Shared across requests/threads: a simple in-memory rate limit for the public signup
@@ -513,8 +552,13 @@ def handler(store):
                 elif self.command=='GET' and self.path=='/v1/stripe/test-status':
                     # Same shim family as test-checkout above: status for the hub's own
                     # account, re-verified live against Stripe rather than trusting whatever a
-                    # possibly-delayed or out-of-order webhook last recorded locally.
-                    with store.db() as c:h=store.auth(c,token)
+                    # possibly-delayed or out-of-order webhook last recorded locally. Also
+                    # backs the WordPress "contract check" screen, so this bundles webhook
+                    # receipt and overage figures alongside the subscription status rather
+                    # than making that screen call three separate endpoints.
+                    with store.db() as c:
+                        h=store.auth(c,token)
+                        usage=store.result(c,h,utc())
                     key=stripe_secret_key()
                     state=store.stripe_account_state(h['account'])
                     if not (key and state['subscription_id']):
@@ -527,6 +571,14 @@ def handler(store):
                         if type(period) is not int or period<0:period=cancel_at if type(cancel_at) is int and cancel_at>=0 else 0
                         r={'mode':'test','subscription_status':live.get('status',''),'updated':utc(),
                            'cancellation_pending':pending,'cancellation_at':period if pending else 0}
+                    r.update(store.webhook_state(h['account']))
+                    r['overage_sites']=usage['overage_sites']
+                    price=overage_price_info(key) if key else None
+                    if price:
+                        r['overage_unit_amount']=price['unit_amount'];r['overage_currency']=price['currency']
+                        r['overage_amount']=price['unit_amount']*usage['overage_sites']
+                    else:
+                        r['overage_unit_amount']=None;r['overage_currency']=None;r['overage_amount']=None
                 elif self.command=='POST' and self.path=='/v1/stripe/test-portal':
                     # Same shim family: open a Stripe-hosted portal for the hub's own account's
                     # customer, recorded from the customer.subscription.created webhook (see

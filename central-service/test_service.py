@@ -197,6 +197,46 @@ class Tests(unittest.TestCase):
   self.assertIsNone(self.s.payment_status('a','2026-10-01'))
   other={'type':'invoice.finalized','data':{'object':{}}}
   self.assertEqual(handle_stripe_event(self.s,other),{'action':'recorded'})
+ def test_webhook_receipt_recorded_for_contract_check_screen(self):
+  # The WordPress "contract check" screen needs proof that a webhook actually arrived for
+  # this account, not just that the local DB agrees with whatever Stripe reports live now.
+  self.assertEqual(self.s.webhook_state('a'),{'last_webhook_type':None,'last_webhook_at':None})
+  checkout={'type':'checkout.session.completed','data':{'object':{'metadata':{'account':'newco2','hub':'newco2-hub1'}}}}
+  handle_stripe_event(self.s,checkout)
+  state=self.s.webhook_state('newco2')
+  self.assertEqual(state['last_webhook_type'],'checkout.session.completed')
+  self.assertIsNotNone(state['last_webhook_at'])
+  cancel={'type':'customer.subscription.deleted','data':{'object':{'metadata':{'account':'a'}}}}
+  handle_stripe_event(self.s,cancel)
+  self.assertEqual(self.s.webhook_state('a')['last_webhook_type'],'customer.subscription.deleted')
+  with self.assertRaises(Invalid):self.s.webhook_state('no-such-account')
+ def test_result_reports_overage_sites(self):
+  # Site count above STRIPE_INCLUDED_SITES, exposed for the same screen (mirrors what
+  # sync_stripe_meter() reports to Stripe's Billing Meter, see test_meter_event_create).
+  self.push(self.a,1,self.ids);self.assertEqual(self.s.status(self.a,self.now)['overage_sites'],0)
+  os.environ['STRIPE_INCLUDED_SITES']='2'
+  try:self.assertEqual(self.s.status(self.a,self.now)['overage_sites'],2)
+  finally:del os.environ['STRIPE_INCLUDED_SITES']
+ def test_hub_self_upgrade_status_endpoint_reports_overage_amount(self):
+  import service as service_module
+  self.push(self.a,1,self.ids)
+  os.environ['STRIPE_INCLUDED_SITES']='1';os.environ['STRIPE_OVERAGE_PRICE_ID']='price_overage_status';os.environ['STRIPE_TEST_SECRET_KEY']='sk_test_fake'
+  self.s.set_stripe_subscription('a','sub_stat2','si_stat2',customer_id='cus_stat2')
+  def fake_get(path,key):
+   if path=='subscriptions/sub_stat2':return {'status':'active'}
+   if path=='prices/price_overage_status':return {'unit_amount':300,'currency':'usd'}
+   raise AssertionError('unexpected path '+path)
+  service_module.stripe_get=fake_get
+  server=HTTPServer(('127.0.0.1',0),handler(self.s));thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
+  try:
+   url='http://127.0.0.1:'+str(server.server_port)
+   req=urllib.request.Request(url+'/v1/stripe/test-status',headers={'Authorization':'Bearer '+self.a})
+   with urllib.request.urlopen(req) as res:r=json.load(res)
+  finally:
+   server.shutdown();server.server_close();thread.join()
+   del os.environ['STRIPE_INCLUDED_SITES'];del os.environ['STRIPE_OVERAGE_PRICE_ID'];del os.environ['STRIPE_TEST_SECRET_KEY']
+  self.assertEqual(r['overage_sites'],3)
+  self.assertEqual((r['overage_unit_amount'],r['overage_currency'],r['overage_amount']),(300,'usd',900))
  def test_checkout_completed_links_subscription_out_of_order(self):
   # Simulates customer.subscription.created arriving (and being dropped, since the account
   # didn't exist yet) *before* checkout.session.completed -- checkout.session.completed must
@@ -550,7 +590,7 @@ class Tests(unittest.TestCase):
    try:
     req2=urllib.request.Request(url+'/v1/stripe/test-status',headers={'Authorization':'Bearer '+self.a})
     with urllib.request.urlopen(req2) as res:
-     r=json.load(res);self.assertEqual(r,{'mode':'test','subscription_status':'active','updated':r['updated'],'cancellation_pending':True,'cancellation_at':1999999999})
+     r=json.load(res);self.assertEqual(r,{'mode':'test','subscription_status':'active','updated':r['updated'],'cancellation_pending':True,'cancellation_at':1999999999,'last_webhook_type':None,'last_webhook_at':None,'overage_sites':0,'overage_unit_amount':None,'overage_currency':None,'overage_amount':None})
    finally:del os.environ['STRIPE_TEST_SECRET_KEY']
   finally:server.shutdown();server.server_close();thread.join()
  def test_hub_self_upgrade_portal_endpoint(self):
