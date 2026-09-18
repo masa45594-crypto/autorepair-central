@@ -250,6 +250,21 @@ Authorization: Bearer <拠点(hub)トークン>
 - 既に有効(`active`/`trialing`/`past_due`/`unpaid`)なサブスクリプションがある状態で`test-checkout`を呼ぶと、Stripeへ都度問い合わせたうえで409を返します(二重契約の防止)
 - `test-status`は、記録済みのサブスクリプションIDがあればStripeへ都度問い合わせて最新状態を返します(Webhookの到着順崩れ対策)
 
+**WordPress管理画面の「契約チェック」向けフィールド(実装済み)**: `test-status`の応答に次を追加しました。テスト購入からテスト解約までを1画面で証明するためのものです。
+
+```json
+{
+  "last_webhook_type": "checkout.session.completed",
+  "last_webhook_at": "2026-09-18T12:00:00+00:00",
+  "overage_sites": 3,
+  "overage_unit_amount": 300,
+  "overage_currency": "usd",
+  "overage_amount": 900
+}
+```
+
+`last_webhook_type`/`last_webhook_at`は、そのaccountについて実際に検証済みWebhookを受信していれば設定されます(`handle_stripe_event`が該当account解決時に毎回記録)。まだ一度も受信していなければ両方`null`です。`overage_sites`は現在のサイト数から`STRIPE_INCLUDED_SITES`を引いた値(`sync_stripe_meter`と同じ計算)。`overage_unit_amount`/`overage_currency`は`STRIPE_OVERAGE_PRICE_ID`のPriceオブジェクトから取得した単価(1時間キャッシュ)で、未設定または取得失敗時は3つとも`null`になります。`overage_amount`は`overage_unit_amount * overage_sites`(Stripeの最小通貨単位。`usd`ならセント、`jpy`のような0桁通貨ならそのままの数値)。
+
 ### 基本料金+従量課金(実装済み: Stripe Billing Meter)
 基本料金(固定額、`STRIPE_PRICE_ID`)に加えて、**Stripeの従量課金機能(Billing Meters)**で「Nサイトまで無料、それ以降1サイトごとに追加料金」という価格をCheckoutへ追加できます。
 
