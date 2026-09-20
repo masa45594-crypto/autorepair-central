@@ -17,7 +17,7 @@ import zipfile
 
 ROOT=Path(__file__).resolve().parents[1]
 REPORTS=ROOT/'reports'
-IMAGE='aaihb-restore-test:0.14.11'
+IMAGE='aaihb-restore-test:0.16.0'
 DB_IMAGE='mysql:8.4'
 
 def docker(args,data=None,timeout=120):
@@ -50,8 +50,10 @@ def main():
         with urllib.request.urlopen('https://wordpress.org/latest.zip',timeout=120) as src,archive.open('wb') as dst:shutil.copyfileobj(src,dst)
         report['wordpress_zip_sha256']=hashlib.sha256(archive.read_bytes()).hexdigest()
         unzip_safe(archive,work);site=work/'site';(work/'wordpress').rename(site)
-        unzip_safe(ROOT/'autorepair-ai-hosting-beta-0.14.11.zip',site/'wp-content/plugins')
-        report['plugin_zip_sha256']=hashlib.sha256((ROOT/'autorepair-ai-hosting-beta-0.14.11.zip').read_bytes()).hexdigest()
+        # Start from the prior release so the deployed-file update path is tested for real.
+        unzip_safe(ROOT/'autorepair-ai-hosting-beta-0.15.0.zip',site/'wp-content/plugins')
+        report['plugin_previous_zip_sha256']=hashlib.sha256((ROOT/'autorepair-ai-hosting-beta-0.15.0.zip').read_bytes()).hexdigest()
+        report['plugin_zip_sha256']=hashlib.sha256((ROOT/'autorepair-ai-hosting-beta-0.16.0.zip').read_bytes()).hexdigest()
         cf7_archive=work/'contact-form-7.zip'
         with urllib.request.urlopen('https://downloads.wordpress.org/plugin/contact-form-7.latest-stable.zip',timeout=120) as src,cf7_archive.open('wb') as dst:shutil.copyfileobj(src,dst)
         unzip_safe(cf7_archive,site/'wp-content/plugins')
@@ -83,6 +85,13 @@ define('AAIHB_VAULT_DIR','/work/vault');define('AAIHB_PUBLIC_ROOT','/work/site')
                 '--mount','type=bind,src='+str(ROOT/'ci')+',dst=/ci,readonly','--mount','type=volume,src='+socket+',dst=/socket,readonly',
                 '-e','TEST_DB_PASSWORD='+password,'-e','AAIHB_CI=1',IMAGE,'php','-S','0.0.0.0:8080','-t','/work/site'])
         docker(['exec',php,'php','/ci/setup.php'],timeout=180)
+        report['stage']='real_plugin_upgrade'
+        plugin_dir=site/'wp-content/plugins/autorepair-ai-hosting-beta'
+        shutil.rmtree(plugin_dir)
+        unzip_safe(ROOT/'autorepair-ai-hosting-beta-0.16.0.zip',site/'wp-content/plugins')
+        docker(['exec',php,'php','/ci/upgrade.php'],timeout=180)
+        report['plugin_update']=json.loads((work/'upgrade.json').read_text())
+        if not all(report['plugin_update'].values()):raise RuntimeError('plugin update verification failed')
         docker(['exec',php,'php','-r',"require '/work/site/wp-load.php';update_option('aaihb_fixture_roundtrip','original');"],timeout=60)
         report['stage']='real_backup'
         docker(['exec',php,'php','/ci/backup.php'],timeout=300)

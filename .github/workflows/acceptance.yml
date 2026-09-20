@@ -34,7 +34,7 @@ jobs:
       - name: Run plugin unit tests (isolated WP stubs, no Docker/MySQL)
         run: |
           mkdir -p /tmp/aaihb-unit
-          unzip -q autorepair-ai-hosting-beta-0.15.1.zip -d /tmp/aaihb-unit
+          unzip -q autorepair-ai-hosting-beta-0.16.0.zip -d /tmp/aaihb-unit
           php /tmp/aaihb-unit/autorepair-ai-hosting-beta/tests/contracts.php
   restore:
     runs-on: ubuntu-24.04
@@ -86,3 +86,24 @@ jobs:
           name: load-evidence
           path: reports/
           retention-days: 7
+  verification-summary:
+    if: always()
+    needs: [central, unit, restore, stripe, load]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      CENTRAL_RESULT: ${{ needs.central.result }}
+      UNIT_RESULT: ${{ needs.unit.result }}
+      RESTORE_RESULT: ${{ needs.restore.result }}
+      STRIPE_RESULT: ${{ needs.stripe.result }}
+      LOAD_RESULT: ${{ needs.load.result }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build verification summary
+        run: python3 ci/verification_summary.py
+      - name: Save verification summary
+        uses: actions/upload-artifact@v4
+        with:
+          name: verification-summary
+          path: reports/verification-summary.json
+          retention-days: 30

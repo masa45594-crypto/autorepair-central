@@ -20,6 +20,7 @@ activate_plugin('woocommerce/woocommerce.php');
 // Newly-activated plugins' init-time setup (CPT registration, etc.) hasn't run yet in this request.
 do_action('plugins_loaded');do_action('init');
 AAIHB_Beta::upgrade();
+update_option('aaihb_upgrade_probe','legacy-0.15.0',false);
 if(class_exists('WPCF7_ContactForm')){
     // The form itself is regular post/postmeta data and survives backup/restore normally.
     // Mail interception for the clone is handled by restore-test/runner.py's own fixture
