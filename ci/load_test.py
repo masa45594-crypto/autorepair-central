@@ -1,18 +1,17 @@
 """Load characterization for central-service. Not a pass/fail gate.
 
-`serve` runs service.py's handler under http.server.ThreadingHTTPServer (see
-README-JA.md's "負荷検証" section: an earlier single-threaded HTTPServer was
-measured to reject connections under concurrent load and was replaced). This
-script must exercise that same class -- testing plain HTTPServer instead
-would measure a configuration nothing actually runs and understate real
-throughput. Against the real Store and the real HTTP handler, no mocks:
+service.py ships as a single-threaded http.server.HTTPServer over SQLite --
+the README already says so ("試験用の単一処理サーバー"). This script puts
+real numbers on that limitation, against the real Store and the real HTTP
+handler, no mocks:
 
   1. baseline latency for /v1/usage and /v1/snapshot at a few site-list sizes
   2. throughput/latency as concurrent HTTP clients increase, against the
-     shipped ThreadingHTTPServer
+     shipped single-threaded server
   3. the same sweep against the underlying SQLite Store directly (bypassing
-     HTTP) -- the write-lock ceiling the HTTP layer would hit next, useful
-     for judging whether a Postgres migration would actually buy anything
+     HTTP), which is the ceiling you'd hit next if the HTTP layer were made
+     concurrent (e.g. ThreadingHTTPServer) -- useful for judging whether that
+     change, or a Postgres migration, would actually buy anything
 """
 import json
 import statistics
@@ -23,7 +22,7 @@ import time
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
-from http.server import ThreadingHTTPServer
+from http.server import HTTPServer
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -73,7 +72,7 @@ def timed_post(url, token, body):
 def baseline_latency(base, token):
     timed_get(base + '/v1/usage', token)  # warm up the connection/handler before measuring
     out = {}
-    for size in (10, 1_000, 20_000):
+    for size in (100, 500, 1_000, 20_000):
         sites = [digest('baseline-' + str(size) + '-' + str(i)) for i in range(size)]
         latency, error = timed_post(base + '/v1/snapshot', token, {'sequence': 1, 'sites': sites[:size // 2]})
         latency2, error2 = timed_post(base + '/v1/snapshot', token, {'sequence': 2, 'sites': sites})
@@ -155,13 +154,13 @@ def main():
     with tempfile.TemporaryDirectory() as tmp:
         store = Store(str(Path(tmp) / 'server.sqlite3'))
         token = store.provision('load', 'hub1')
-        server = ThreadingHTTPServer(('127.0.0.1', 0), handler(store))
+        server = HTTPServer(('127.0.0.1', 0), handler(store))
         threading.Thread(target=server.serve_forever, daemon=True).start()
         base = 'http://127.0.0.1:' + str(server.server_port)
         try:
             report = {
                 'scope': 'central_service_load_characterization',
-                'note': 'Not pass/fail. Quantifies the ThreadingHTTPServer + SQLite design already flagged as pilot-only in central-service/README-JA.md.',
+                'note': 'Not pass/fail. Quantifies the single-threaded HTTPServer + SQLite design already flagged as pilot-only in central-service/README-JA.md.',
                 'baseline_latency': baseline_latency(base, token),
                 'http_concurrency_sweep': http_concurrency_sweep(base, token),
                 'store_write_concurrency_sweep_bypassing_http': store_write_concurrency_sweep(),
