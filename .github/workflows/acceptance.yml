@@ -34,7 +34,7 @@ jobs:
       - name: Run plugin unit tests (isolated WP stubs, no Docker/MySQL)
         run: |
           mkdir -p /tmp/aaihb-unit
-          unzip -q autorepair-ai-hosting-beta-0.16.0.zip -d /tmp/aaihb-unit
+          unzip -q autorepair-ai-hosting-beta-0.20.0.zip -d /tmp/aaihb-unit
           php /tmp/aaihb-unit/autorepair-ai-hosting-beta/tests/contracts.php
   restore:
     runs-on: ubuntu-24.04
