@@ -404,13 +404,17 @@ def handle_stripe_event(store,event):
     return {'action':'recorded'}
 
 def stripe_secret_key():
-    """Accept the current Render variable name during the test-only migration.
+    """Use the live key when it is configured, otherwise retain test compatibility."""
+    return os.environ.get('STRIPE_SECRET_KEY','') or os.environ.get('STRIPE_TEST_SECRET_KEY','')
 
-    ``STRIPE_TEST_SECRET_KEY`` is preferred; ``STRIPE_SECRET_KEY`` is retained only as a
-    backward-compatible alias for the existing Render service.  All Stripe adapters still
-    reject any key other than ``sk_test_...``.
-    """
-    return os.environ.get('STRIPE_TEST_SECRET_KEY') or os.environ.get('STRIPE_SECRET_KEY','')
+def stripe_live_enabled():
+    """An explicit second switch prevents accidental live charging after a key is pasted."""
+    return os.environ.get('STRIPE_LIVE_ENABLED','')=='1'
+
+def stripe_mode(key):
+    if key.startswith('sk_live_') and stripe_live_enabled():return 'live'
+    if key.startswith('sk_test_'):return 'test'
+    raise ValueError('Stripe billing is not safely configured')
 
 def included_sites():
     raw=os.environ.get('STRIPE_INCLUDED_SITES','10')
@@ -432,7 +436,9 @@ def sync_stripe_meter(store,account,period,current,sequence):
     if not customer:return
     overage=max(0,current-included_sites())
     identifier='arai_'+digest(account+'|'+period+'|'+str(sequence)+'|'+str(overage))[:48]
-    try:record_meter_event(event_name,customer,overage,key,identifier)
+    try:
+        if stripe_live_enabled():record_meter_event(event_name,customer,overage,key,identifier,allow_live=True)
+        else:record_meter_event(event_name,customer,overage,key,identifier)
     except Exception:pass
 
 def stripe_get(path,key):
@@ -500,7 +506,7 @@ def handler(store):
                     if not (return_url and key):return self.reply(404,{'error':'not_found'})
                     mtoken=(parse_qs(urlparse(self.path).query).get('token') or [''])[0]
                     with store.db() as c:row=store.auth_management(c,mtoken)
-                    session=create_portal_session(row['stripe_customer'],return_url,key)
+                    session=create_portal_session(row['stripe_customer'],return_url,key,allow_live=stripe_live_enabled())
                     self.send_response(302);self.send_header('Location',session['url']);self.send_header('Content-Length','0');self.end_headers();return
                 elif self.command=='POST' and self.path=='/v1/manage/hubs':
                     # Same management-token auth as the portal link, via the normal
@@ -547,8 +553,9 @@ def handler(store):
                     if state['subscription_id']:
                         live=stripe_get('subscriptions/'+state['subscription_id'],key)
                         if live.get('status') in ('active','trialing','past_due','unpaid'):raise Conflict()
-                    session=create_checkout_session(h['account'],h['id'],price_id,success_url,cancel_url,key,overage_price_id=os.environ.get('STRIPE_OVERAGE_PRICE_ID') or None)
-                    r={'mode':'test','checkout_url':session['url']}
+                    mode=stripe_mode(key)
+                    session=create_checkout_session(h['account'],h['id'],price_id,success_url,cancel_url,key,overage_price_id=os.environ.get('STRIPE_OVERAGE_PRICE_ID') or None,allow_live=stripe_live_enabled())
+                    r={'mode':mode,'checkout_url':session['url']}
                 elif self.command=='GET' and self.path=='/v1/stripe/test-status':
                     # Same shim family as test-checkout above: status for the hub's own
                     # account, re-verified live against Stripe rather than trusting whatever a
@@ -562,14 +569,14 @@ def handler(store):
                     key=stripe_secret_key()
                     state=store.stripe_account_state(h['account'])
                     if not (key and state['subscription_id']):
-                        r={'mode':'test','subscription_status':'none','updated':utc(),'cancellation_pending':False,'cancellation_at':0}
+                        r={'mode':stripe_mode(key) if key else 'test','subscription_status':'none','updated':utc(),'cancellation_pending':False,'cancellation_at':0}
                     else:
                         live=stripe_get('subscriptions/'+state['subscription_id'],key)
                         cancel_at=live.get('cancel_at')
                         pending=bool(live.get('cancel_at_period_end')) or (type(cancel_at) is int and cancel_at>0)
                         period=live.get('current_period_end')
                         if type(period) is not int or period<0:period=cancel_at if type(cancel_at) is int and cancel_at>=0 else 0
-                        r={'mode':'test','subscription_status':live.get('status',''),'updated':utc(),
+                        r={'mode':stripe_mode(key),'subscription_status':live.get('status',''),'updated':utc(),
                            'cancellation_pending':pending,'cancellation_at':period if pending else 0}
                     r.update(store.webhook_state(h['account']))
                     r['overage_sites']=usage['overage_sites']
@@ -592,8 +599,8 @@ def handler(store):
                     if not isinstance(body,dict):raise Invalid('expected an object')
                     state=store.stripe_account_state(h['account'])
                     if not (key and state['customer_id']):raise Invalid('no Stripe customer on file for this account yet')
-                    session=create_portal_session(state['customer_id'],body.get('return_url',''),key)
-                    r={'mode':'test','portal_url':session['url']}
+                    session=create_portal_session(state['customer_id'],body.get('return_url',''),key,allow_live=stripe_live_enabled())
+                    r={'mode':stripe_mode(key),'portal_url':session['url']}
                 elif self.command=='POST' and self.path=='/v1/admin/provision':
                     # Disabled unless ADMIN_TOKEN is set; exists only so hub tokens can be
                     # issued on hosts with no shell access (e.g. a free-tier PaaS).
@@ -658,7 +665,7 @@ def handler(store):
                     # guessing or colliding with an existing customer.
                     account='acct-'+secrets.token_hex(8);hub='hub-'+secrets.token_hex(8)
                     base=int(os.environ.get('SIGNUP_BASE','10000'));unit=int(os.environ.get('SIGNUP_UNIT','100'))
-                    session=create_checkout_session(account,hub,price_id,success_url,cancel_url,key,customer_email=email,base=base,unit=unit,overage_price_id=os.environ.get('STRIPE_OVERAGE_PRICE_ID') or None)
+                    session=create_checkout_session(account,hub,price_id,success_url,cancel_url,key,customer_email=email,base=base,unit=unit,overage_price_id=os.environ.get('STRIPE_OVERAGE_PRICE_ID') or None,allow_live=stripe_live_enabled())
                     r={'url':session['url']}
                 else:return self.reply(404,{'error':'not_found'})
                 self.reply(200,r)
