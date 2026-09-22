@@ -17,7 +17,7 @@ import zipfile
 
 ROOT=Path(__file__).resolve().parents[1]
 REPORTS=ROOT/'reports'
-IMAGE='aaihb-restore-test:0.20.0'
+IMAGE='aaihb-restore-test:0.20.6'
 DB_IMAGE='mysql:8.4'
 
 def docker(args,data=None,timeout=120):
