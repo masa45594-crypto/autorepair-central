@@ -399,6 +399,8 @@ class Tests(unittest.TestCase):
    return {'livemode':False,'id':'cs_test_123','url':'https://checkout.stripe.com/pay/cs_test_123'}
   r=create_checkout_session('newco','hub1','price_abc','https://x/ok','https://x/cancel','sk_test_fake',transport=transport)
   self.assertEqual(r,{'id':'cs_test_123','url':'https://checkout.stripe.com/pay/cs_test_123'})
+  def live_transport(path,data,key,identity):return {'livemode':True,'id':'cs_live_123','url':'https://checkout.stripe.com/pay/cs_live_123'}
+  self.assertEqual(create_checkout_session('newco','hub1','price_abc','https://x/ok','https://x/cancel','sk_live_fake',transport=live_transport,allow_live=True),{'id':'cs_live_123','url':'https://checkout.stripe.com/pay/cs_live_123'})
   def bad_transport(path,data,key,identity):return {'livemode':False,'id':'not-a-cs-id','url':'https://x'}
   with self.assertRaises(ValueError):create_checkout_session('newco','hub1','price_abc','https://x/ok','https://x/cancel','sk_test_fake',transport=bad_transport)
  def test_meter_event_create(self):
@@ -409,6 +411,7 @@ class Tests(unittest.TestCase):
    self.assertEqual(data,{'event_name':'managed_sites_overage','payload[stripe_customer_id]':'cus_test','payload[value]':'3','identifier':'id_1'})
    return {'livemode':False,'event_name':'managed_sites_overage'}
   self.assertEqual(record_meter_event('managed_sites_overage','cus_test',3,'sk_test_fake','id_1',transport),{'identifier':'id_1','value':3})
+  self.assertEqual(record_meter_event('managed_sites_overage','cus_test',3,'sk_live_fake','id_1',lambda *a:{'livemode':True,'event_name':'managed_sites_overage'},allow_live=True),{'identifier':'id_1','value':3})
  def test_portal_session_create(self):
   with self.assertRaises(ValueError):create_portal_session('cus_test','https://x/return','sk_live_fake')
   with self.assertRaises(ValueError):create_portal_session('not-a-customer','https://x/return','sk_test_fake')
@@ -418,6 +421,7 @@ class Tests(unittest.TestCase):
    return {'livemode':False,'id':'bps_test_123','url':'https://billing.stripe.com/session/bps_test_123'}
   r=create_portal_session('cus_test','https://x/return','sk_test_fake',transport=transport)
   self.assertEqual(r,{'id':'bps_test_123','url':'https://billing.stripe.com/session/bps_test_123'})
+  self.assertEqual(create_portal_session('cus_test','https://x/return','sk_live_fake',lambda *a:{'livemode':True,'id':'bps_live_123','url':'https://billing.stripe.com/session/bps_live_123'},allow_live=True),{'id':'bps_live_123','url':'https://billing.stripe.com/session/bps_live_123'})
   def bad_transport(path,data,key,identity):return {'livemode':False,'id':'not-a-bps-id','url':'https://x'}
   with self.assertRaises(ValueError):create_portal_session('cus_test','https://x/return','sk_test_fake',transport=bad_transport)
  def test_signup_endpoint(self):
