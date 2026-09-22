@@ -243,7 +243,7 @@ class Tests(unittest.TestCase):
   # still end up linking the subscription itself, using the subscription id Checkout already
   # carries, rather than depending on that earlier event having succeeded.
   import service as service_module
-  os.environ['STRIPE_OVERAGE_PRICE_ID']='price_overage9'
+  os.environ['STRIPE_PRICE_ID']='price_base9'
   service_module.stripe_get=lambda path,key:{'items':{'data':[
     {'id':'si_base9','price':{'id':'price_base9'}},
     {'id':'si_overage9','price':{'id':'price_overage9'}}]}} if path=='subscriptions/sub_outoforder' else (_ for _ in ()).throw(AssertionError('unexpected path '+path))
@@ -254,10 +254,10 @@ class Tests(unittest.TestCase):
      'customer':'cus_outoforder','subscription':'sub_outoforder'}}}
    r=handle_stripe_event(self.s,checkout)
    self.assertEqual(r['action'],'provisioned')
-   self.assertEqual(self.s.stripe_subscription_item('outoforder'),'si_overage9')
+   self.assertEqual(self.s.stripe_subscription_item('outoforder'),'si_base9')
    self.assertEqual(self.s.stripe_account_state('outoforder'),{'subscription_id':'sub_outoforder','customer_id':'cus_outoforder'})
   finally:
-   del os.environ['STRIPE_OVERAGE_PRICE_ID'];del os.environ['STRIPE_TEST_SECRET_KEY']
+   del os.environ['STRIPE_PRICE_ID'];del os.environ['STRIPE_TEST_SECRET_KEY']
  def test_checkout_completed_subscription_link_failure_does_not_block_provisioning(self):
   import service as service_module
   def boom(path,key):raise RuntimeError('stripe unreachable')
@@ -303,6 +303,25 @@ class Tests(unittest.TestCase):
    self.assertEqual(len(calls),2)
   finally:
    service_module.record_meter_event=original;del os.environ['STRIPE_TEST_SECRET_KEY'];del os.environ['STRIPE_METER_EVENT_NAME']
+   server.shutdown();server.server_close();thread.join()
+ def test_snapshot_endpoint_syncs_site_quantity_instead_of_meter_when_price_id_set(self):
+  import service as service_module
+  self.s.set_stripe_subscription('a','sub_q1','si_q1',customer_id='cus_q1')
+  quantity_calls=[];meter_calls=[]
+  original_quantity=service_module.update_subscription_item_quantity;original_meter=service_module.record_meter_event
+  service_module.update_subscription_item_quantity=lambda item_id,quantity,key,*a,**k:quantity_calls.append((item_id,quantity,key))
+  service_module.record_meter_event=lambda *a,**k:meter_calls.append(a)
+  os.environ['STRIPE_TEST_SECRET_KEY']='sk_test_fake';os.environ['STRIPE_PRICE_ID']='price_base9'
+  server=HTTPServer(('127.0.0.1',0),handler(self.s));thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
+  try:
+   url='http://127.0.0.1:'+str(server.server_port)
+   req=urllib.request.Request(url+'/v1/snapshot',data=json.dumps({'sequence':1,'sites':self.ids[:2]}).encode(),headers={'Authorization':'Bearer '+self.a})
+   with urllib.request.urlopen(req) as res:self.assertEqual(json.load(res)['current'],2)
+   self.assertEqual(quantity_calls,[('si_q1',2,'sk_test_fake')])
+   self.assertEqual(meter_calls,[])
+  finally:
+   service_module.update_subscription_item_quantity=original_quantity;service_module.record_meter_event=original_meter
+   del os.environ['STRIPE_TEST_SECRET_KEY'];del os.environ['STRIPE_PRICE_ID']
    server.shutdown();server.server_close();thread.join()
  def test_signup_page(self):
   server=HTTPServer(('127.0.0.1',0),handler(self.s));thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
