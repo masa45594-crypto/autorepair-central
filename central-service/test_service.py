@@ -2,7 +2,7 @@ import hashlib,hmac,json,os,re,tempfile,time,unittest,threading,urllib.request,u
 from pathlib import Path
 from http.server import HTTPServer
 from service import Store,Invalid,Conflict,Unauthorized,handler,digest,handle_stripe_event
-from stripe_draft import plan,send,correct,verify_webhook,finalize,deliver,plan_checkout,create_checkout_session,create_portal_session,record_refund,record_meter_event
+from stripe_draft import plan,send,correct,verify_webhook,finalize,deliver,plan_checkout,create_checkout_session,create_portal_session,record_refund,record_meter_event,update_subscription_item_quantity
 import mailer
 class Tests(unittest.TestCase):
  def setUp(self):
@@ -412,6 +412,18 @@ class Tests(unittest.TestCase):
    return {'livemode':False,'event_name':'managed_sites_overage'}
   self.assertEqual(record_meter_event('managed_sites_overage','cus_test',3,'sk_test_fake','id_1',transport),{'identifier':'id_1','value':3})
   self.assertEqual(record_meter_event('managed_sites_overage','cus_test',3,'sk_live_fake','id_1',lambda *a:{'livemode':True,'event_name':'managed_sites_overage'},allow_live=True),{'identifier':'id_1','value':3})
+ def test_subscription_item_quantity_update(self):
+  with self.assertRaises(ValueError):update_subscription_item_quantity('si_test',5,'sk_live_fake')
+  with self.assertRaises(ValueError):update_subscription_item_quantity('not-an-item',5,'sk_test_fake')
+  with self.assertRaises(ValueError):update_subscription_item_quantity('si_test',0,'sk_test_fake')
+  with self.assertRaises(ValueError):update_subscription_item_quantity('si_test',100001,'sk_test_fake')
+  def transport(path,data,key,identity):
+   self.assertEqual(path,'subscription_items/si_test');self.assertEqual(data,{'quantity':'5'})
+   return {'livemode':False,'id':'si_test','quantity':5}
+  self.assertEqual(update_subscription_item_quantity('si_test',5,'sk_test_fake',transport),{'id':'si_test','quantity':5})
+  self.assertEqual(update_subscription_item_quantity('si_test',5,'sk_live_fake',lambda *a:{'livemode':True,'id':'si_test','quantity':5},allow_live=True),{'id':'si_test','quantity':5})
+  def bad_transport(path,data,key,identity):return {'livemode':False,'id':'si_test','quantity':999}
+  with self.assertRaises(ValueError):update_subscription_item_quantity('si_test',5,'sk_test_fake',transport=bad_transport)
  def test_portal_session_create(self):
   with self.assertRaises(ValueError):create_portal_session('cus_test','https://x/return','sk_live_fake')
   with self.assertRaises(ValueError):create_portal_session('not-a-customer','https://x/return','sk_test_fake')
