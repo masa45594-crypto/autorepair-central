@@ -1,0 +1,22 @@
+PASS no core dependency
+PASS automation default off
+PASS pre-change rules saved
+PASS repair applied
+PASS rules actually rebuilt
+PASS rules restored
+PASS repeat restore refused
+PASS later changes preserved
+PASS conflict not overwritten
+PASS stale file removed
+PASS exact maintenance bytes restored
+PASS active maintenance refused
+PASS nonstandard PHP refused
+PASS updater lock respected
+PASS allowlist enforced
+PASS automatic repair runs
+PASS daily limit respected
+PASS concurrent repair rejected
+PASS repair UI renders
+PASS CSRF rejected
+PASS subscriber denied
+TOTAL 21 checks passed

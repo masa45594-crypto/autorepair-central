@@ -1,0 +1,15 @@
+test_cleanup_failure_not_passed (test_restore_runner.RunnerTests.test_cleanup_failure_not_passed) ... ok
+test_corrupt_backup_never_starts_clone (test_restore_runner.RunnerTests.test_corrupt_backup_never_starts_clone) ... ok
+test_database_error_not_passed (test_restore_runner.RunnerTests.test_database_error_not_passed) ... ok
+test_hash_mismatch (test_restore_runner.RunnerTests.test_hash_mismatch) ... ok
+test_http_failure_not_passed (test_restore_runner.RunnerTests.test_http_failure_not_passed) ... ok
+test_missing_docker_is_unavailable (test_restore_runner.RunnerTests.test_missing_docker_is_unavailable) ... ok
+test_static_page_without_wordpress_not_passed (test_restore_runner.RunnerTests.test_static_page_without_wordpress_not_passed) ... ok
+test_success_requires_all_checks (test_restore_runner.RunnerTests.test_success_requires_all_checks) ... ok
+test_wrong_prefix_rejected (test_restore_runner.RunnerTests.test_wrong_prefix_rejected) ... ok
+test_zip_traversal (test_restore_runner.RunnerTests.test_zip_traversal) ... ok
+
+----------------------------------------------------------------------
+Ran 10 tests in 0.032s
+
+OK

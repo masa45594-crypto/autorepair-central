@@ -1,0 +1,23 @@
+PASS independent from AutoRepair core
+PASS guard defaults off
+PASS ZipArchive available
+PASS signed snapshot ready
+PASS plugin bytes restored
+PASS pre-restore files retained
+PASS binary file restored
+PASS missing main plugin file restored
+PASS later changes block automatic restore
+PASS path traversal rejected
+PASS self rollback rejected
+PASS single-file rollback rejected
+PASS concurrent backup rejected
+PASS manifest tampering rejected
+PASS payload corruption rejected
+PASS update allowed after successful backup
+PASS two 5xx trigger rollback
+PASS unknown HTTP does not trigger rollback
+PASS unsupported protected update blocked
+PASS admin screen renders
+PASS nonce required
+PASS nonadmin mutation denied
+TOTAL 22 checks passed

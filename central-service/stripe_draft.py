@@ -1,7 +1,9 @@
-"""Optional Stripe TEST MODE billing adapter. Creates a draft invoice (send()), then can
+"""Stripe billing adapter. The invoice-draft commands remain test-only; Checkout,
+Portal, and Billing Meter calls may use live mode only when the caller explicitly opts in.
+Creates a draft invoice (send()), then can
 finalize() and deliver() it so the test customer pays via Stripe's own hosted invoice page.
 Collection is always 'send_invoice': this never auto-charges a saved payment method, and
-only sk_test_ keys are accepted anywhere in this file."""
+only sk_test_ keys are accepted by the invoice-draft commands."""
 import argparse, hashlib, hmac, json, os, re, time, urllib.request, urllib.parse
 from pathlib import Path
 try:
@@ -37,6 +39,17 @@ def post(path,data,key,identity):
     req=urllib.request.Request('https://api.stripe.com/v1/'+path,data=urllib.parse.urlencode(data).encode(),headers={'Authorization':'Bearer '+key,'Idempotency-Key':identity,'Content-Type':'application/x-www-form-urlencoded'},method='POST')
     with urllib.request.urlopen(req,timeout=20) as r:return json.load(r)
 
+def key_livemode(key,allow_live=False):
+    """Return Stripe's expected livemode flag, rejecting accidental live use.
+
+    Live credentials are only accepted by web-service callers that set the separate
+    ``STRIPE_LIVE_ENABLED=1`` deployment gate.  This prevents a copied live key from
+    silently turning an old test deployment into a charge-capable service.
+    """
+    if key.startswith('sk_test_'):return False
+    if allow_live and key.startswith('sk_live_'):return True
+    raise ValueError('a Stripe test key is required, or explicitly enable live billing')
+
 def plan_checkout(account,hub,price_id,success_url,cancel_url,customer_email=None,base=10000,unit=100,overage_price_id=None):
     """Build a subscription Checkout Session.
 
@@ -60,11 +73,11 @@ def plan_checkout(account,hub,price_id,success_url,cancel_url,customer_email=Non
     if overage_price_id is not None:data['line_items[1][price]']=overage_price_id
     return data
 
-def create_checkout_session(account,hub,price_id,success_url,cancel_url,key,customer_email=None,base=10000,unit=100,overage_price_id=None,transport=post):
-    """Create the Checkout Session a new customer would actually visit. TEST MODE ONLY.
+def create_checkout_session(account,hub,price_id,success_url,cancel_url,key,customer_email=None,base=10000,unit=100,overage_price_id=None,transport=post,allow_live=False):
+    """Create the Checkout Session a new customer would actually visit.
     Does not deliver the resulting URL anywhere; the caller (not implemented yet) is
     responsible for presenting it to the customer."""
-    if not key.startswith('sk_test_'):raise ValueError('Only sk_test_ keys allowed. Live billing is not implemented.')
+    expected_livemode=key_livemode(key,allow_live)
     data=plan_checkout(account,hub,price_id,success_url,cancel_url,customer_email,base,unit,overage_price_id)
     # Stable per (account, hub, price, success/cancel URL): a retried click with the same
     # destination reuses the still-valid session instead of spawning a new one. success_url
@@ -74,39 +87,39 @@ def create_checkout_session(account,hub,price_id,success_url,cancel_url,key,cust
     # an earlier attempt's cached session.
     identity=hashlib.sha256((account+'|'+hub+'|'+price_id+'|'+(overage_price_id or '')+'|'+success_url+'|'+cancel_url).encode()).hexdigest()
     r=transport('checkout/sessions',data,key,identity)
-    if r.get('livemode') is not False or not re.fullmatch('cs_[A-Za-z0-9_]+',r.get('id','')) or not r.get('url'):raise ValueError('unexpected checkout session response')
+    if r.get('livemode') is not expected_livemode or not re.fullmatch('cs_[A-Za-z0-9_]+',r.get('id','')) or not r.get('url'):raise ValueError('unexpected checkout session response')
     return {'id':r['id'],'url':r['url']}
 
-def record_meter_event(event_name,customer_id,value,key,identifier,transport=post):
+def record_meter_event(event_name,customer_id,value,key,identifier,transport=post,allow_live=False):
     """Record the latest overage count for a Stripe Billing Meter in test mode.
 
     The configured meter uses ``last`` aggregation.  Therefore ``value`` must be the
     *current* number of excess sites, not a running total or this period's peak.
     """
-    if not key.startswith('sk_test_'):raise ValueError('Only sk_test_ keys allowed. Live billing is not implemented.')
+    expected_livemode=key_livemode(key,allow_live)
     if not re.fullmatch(r'[A-Za-z0-9_]{1,100}',event_name):raise ValueError('invalid meter event name')
     if not re.fullmatch(r'cus_[A-Za-z0-9]+',customer_id):raise ValueError('a Stripe customer ID (cus_...) is required')
     if type(value) is not int or value<0:raise ValueError('meter value must be a nonnegative integer')
     if not re.fullmatch(r'[A-Za-z0-9_-]{1,100}',identifier):raise ValueError('invalid meter event identifier')
     data={'event_name':event_name,'payload[stripe_customer_id]':customer_id,'payload[value]':str(value),'identifier':identifier}
     r=transport('billing/meter_events',data,key,identifier)
-    if r.get('livemode') is not False or r.get('event_name')!=event_name:raise ValueError('unexpected meter event response')
+    if r.get('livemode') is not expected_livemode or r.get('event_name')!=event_name:raise ValueError('unexpected meter event response')
     return {'identifier':identifier,'value':value}
 
-def create_portal_session(customer,return_url,key,transport=post):
+def create_portal_session(customer,return_url,key,transport=post,allow_live=False):
     """Create a Stripe Billing Portal session so an existing customer can manage or cancel
     their own subscription on Stripe's hosted page. TEST MODE ONLY. There is no public
     endpoint or login system calling this yet; an operator confirms the customer's identity
     some other way (e.g. their reply to the account's registered email) and runs this from
     the CLI (--portal-customer) to hand them the resulting link."""
-    if not key.startswith('sk_test_'):raise ValueError('Only sk_test_ keys allowed. Live billing is not implemented.')
+    expected_livemode=key_livemode(key,allow_live)
     if not re.fullmatch('cus_[A-Za-z0-9]+',customer):raise ValueError('test customer required')
     if not re.fullmatch(r'https://\S+',return_url):raise ValueError('return_url must be https')
     # Idempotent within the same minute only (unlike Checkout, a customer may legitimately
     # ask for a fresh portal link many times over weeks; each such ask should get one).
     identity=hashlib.sha256((customer+'|'+return_url+'|'+str(int(time.time()//60))).encode()).hexdigest()
     r=transport('billing_portal/sessions',{'customer':customer,'return_url':return_url},key,identity)
-    if r.get('livemode') is not False or not re.fullmatch('bps_[A-Za-z0-9_]+',r.get('id','')) or not r.get('url'):raise ValueError('unexpected portal session response')
+    if r.get('livemode') is not expected_livemode or not re.fullmatch('bps_[A-Za-z0-9_]+',r.get('id','')) or not r.get('url'):raise ValueError('unexpected portal session response')
     return {'id':r['id'],'url':r['url']}
 
 def send(usage,customer,state_dir,key,transport=post):

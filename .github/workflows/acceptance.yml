@@ -34,20 +34,30 @@ jobs:
       - name: Run plugin unit tests (isolated WP stubs, no Docker/MySQL)
         run: |
           mkdir -p /tmp/aaihb-unit
-          unzip -q autorepair-ai-hosting-beta20.6.zip -d /tmp/aaihb-unit
+          unzip -q autorepair-ai-hosting-beta-0.20.6.zip -d /tmp/aaihb-unit
           php /tmp/aaihb-unit/autorepair-ai-hosting-beta/tests/contracts.php
   restore:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - db_image: mysql:8.4
+            label: mysql-8.4
+          - db_image: mariadb:10.5
+            label: mariadb-10.5
     steps:
       - uses: actions/checkout@v4
       - name: Run real Docker + MySQL rehearsal
+        env:
+          AAIHB_DB_IMAGE: ${{ matrix.db_image }}
         run: python3 ci/e2e.py
       - name: Save test evidence only
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: restore-evidence
+          name: restore-evidence-${{ matrix.label }}
           path: reports/
           retention-days: 7
   stripe:

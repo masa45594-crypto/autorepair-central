@@ -1,0 +1,13 @@
+PASS full manifest includes files and DB
+PASS maintenance released after backup
+PASS temporary marker excluded
+PASS site directory restored
+PASS fake SQL adapter preserves binary null zero values
+PASS session SQL mode restored
+PASS maintenance released after restore
+PASS pre-restore full snapshot retained
+PASS previous site tree retained
+PASS previous DB tables retained
+PASS SQL publish failure restores current filesystem
+PASS failure releases owned marker
+TOTAL 12 fixture checks passed; real MySQL not exercised
