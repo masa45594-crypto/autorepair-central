@@ -1,0 +1,17 @@
+<?php
+if(!defined('AAIHB_TESTING')||!AAIHB_TESTING)exit;
+require_once ABSPATH.'wp-admin/includes/plugin.php';require_once ABSPATH.'wp-admin/includes/template.php';wp_set_current_user(1);$_SERVER['HTTPS']='on';activate_plugin('autorepair-ai-hosting-beta/autorepair-ai-hosting-beta.php');AAIHB_Beta::upgrade();
+$n=0;function dcheck($ok,$label){global $n;if(!$ok)throw new RuntimeException('FAIL '.$label);$n++;echo "PASS $label\n";}
+dcheck(!class_exists('WPAI_Diagnostics')&&!class_exists('WPAI_Logger'),'core plugin absent');
+$GLOBALS['diag_http']=200;add_filter('pre_http_request',function($pre,$args){dcheck($args['sslverify']&&$args['redirection']===0&&$args['limit_response_size']===32768,'bounded safe HTTP options');return ['response'=>['code'=>$GLOBALS['diag_http']],'headers'=>[],'body'=>'{"namespaces":["wp/v2"]}'];},10,2);
+$r=AAIHB_Beta::agent_scan();dcheck(!is_wp_error($r),'Agent diagnoses without core');$data=$r->get_data();dcheck(AAIHB_Beta::validate_report($data),'backwards-compatible ten-check protocol');dcheck(count($data['checks'])===10,'ten checks');dcheck(strpos(json_encode($data),'namespaces')===false,'HTTP body never transmitted');dcheck(is_wp_error(AAIHB_Beta::agent_scan()),'scan rate limiting retained');
+require_once '/core/includes/class-wpai-logger.php';require_once '/core/includes/class-wpai-diagnostics.php';delete_option('aaihb_last_scan');$r=AAIHB_Beta::agent_scan();dcheck(!is_wp_error($r),'real core classes coexist');
+$GLOBALS['diag_http']=503;delete_option('aaihb_last_scan');$data=AAIHB_Beta::agent_scan()->get_data();dcheck($data['checks'][0]['status']==='critical','HTTP 503 critical');
+dcheck(AAIHB_Diagnostics::disk_status(false)==='warning','unmeasurable disk warning');dcheck(AAIHB_Diagnostics::disk_status(0)==='critical','full disk critical');dcheck(AAIHB_Diagnostics::disk_status(2*GB_IN_BYTES)==='healthy','disk normal');dcheck(AAIHB_Diagnostics::cron_status([time()-7200=>[]],time())==='warning','overdue cron warning');dcheck(AAIHB_Diagnostics::cron_status([time()+60=>[]],time())==='healthy','independent cron no WPAI job needed');
+$f='/tmp/hosting-log-test';file_put_contents($f,'PHP Fatal error SECRET'.str_repeat('x',140000));dcheck(AAIHB_Diagnostics::log_status($f)==='healthy','log reads bounded tail');file_put_contents($f,'PHP Fatal error SECRET',FILE_APPEND);dcheck(AAIHB_Diagnostics::log_status($f)==='warning','log marker warning without assuming timestamp');unlink($f);dcheck(AAIHB_Diagnostics::log_status($f)==='warning','missing log not proven healthy');
+update_option('aaihb_local_report',$data,false);$_GET=['page'=>'aaihb-start'];ob_start();AAIHB_Selfserve::page();$html=ob_get_clean();file_put_contents('/qa/independent-start.html',$html);dcheck(strpos($html,'このサイトを診断する')!==false,'local diagnosis entry visible');dcheck(strpos($html,'SECRET')===false,'no log leak');
+add_filter('wp_die_handler',function(){return function(){throw new RuntimeException('Denied');};});$_REQUEST=[];try{AAIHB_Diagnostics::local_scan();dcheck(false,'nonce rejected');}catch(RuntimeException $e){dcheck(true,'nonce rejected');}
+delete_option('aaihb_last_scan');$_REQUEST['_wpnonce']=wp_create_nonce('aaihb_local_scan');add_filter('wp_redirect',function(){throw new RuntimeException('redirect');});
+try{AAIHB_Diagnostics::local_scan();}catch(RuntimeException $e){dcheck($e->getMessage()==='redirect','local scan reaches redirect');}
+dcheck(AAIHB_Beta::validate_report(get_option('aaihb_local_report')),'local scan saves valid result');
+echo "TOTAL $n checks passed\n";

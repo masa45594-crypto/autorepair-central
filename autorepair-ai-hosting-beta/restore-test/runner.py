@@ -15,7 +15,7 @@ import tempfile
 import time
 import zipfile
 
-PHP_IMAGE = 'aaihb-restore-test:0.20.5'
+PHP_IMAGE = 'aaihb-restore-test:0.20.6'
 MYSQL_IMAGE = 'mysql:8.4'
 MARIADB_IMAGE = 'mariadb:10.5'
 

@@ -2,7 +2,7 @@
 /**
  * Plugin Name: AutoRepair AI Hosting Beta
  * Description: Independent diagnostics, recovery and isolated restore rehearsal with separately verified backup status.
- * Version: 0.20.5
+ * Version: 0.20.6
  * Requires at least: 6.2
  * Requires PHP: 7.4
  * Author: AutoRepair AI

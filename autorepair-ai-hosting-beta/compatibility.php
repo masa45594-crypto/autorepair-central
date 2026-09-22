@@ -1,0 +1,5 @@
+<?php
+if(!defined('ABSPATH'))exit;
+final class AAIHB_Compatibility {
+ public static function checks(){global $wpdb;$out=[];$add=function($label,$ok,$note)use(&$out){$out[]=['label'=>$label,'ok'=>(bool)$ok,'note'=>$note];};$add('PHP',version_compare(PHP_VERSION,'7.4.0','>='),'現在 '.PHP_VERSION.' ／ 必要 7.4 以上');$add('ZipArchive',class_exists('ZipArchive'),class_exists('ZipArchive')?'利用可能':'PHP ZipArchive拡張を有効にしてください');$mysql=isset($wpdb)&&method_exists($wpdb,'get_var')?$wpdb->get_var('SELECT VERSION()'):'';$supported=AAIHB_VaultDB::supported_server($mysql);$add('データベース',$supported,'現在 '.($mysql?:'確認できません').' ／ '.($supported?'MySQL 8.x または MariaDB 10.5 以上':'MySQL 8.x または MariaDB 10.5 以上が必要です'));try{$vault=AAIHB_VaultIO::root();$free=@disk_free_space($vault);$add('保管先',true,'公開領域外・権限0700を確認済み'.($free!==false?' ／ 空き '.size_format($free,1):''));}catch(Throwable $e){$add('保管先',false,$e->getMessage());}$add('隔離リハーサル',function_exists('proc_open'),'proc_open '.(function_exists('proc_open')?'利用可能':'が無効です。サーバー管理者へ確認してください'));return $out;}
+}

@@ -1,0 +1,16 @@
+PASS saved does not imply verified
+PASS complete evidence accepted
+PASS wrong run nonce rejected
+PASS missing files cannot pass
+PASS missing database cannot pass
+PASS missing homepage cannot pass
+PASS missing wordpress cannot pass
+PASS missing cleanup cannot pass
+PASS signed result read
+PASS tampered result rejected
+PASS changed source invalidates evidence
+PASS interrupted run cannot imply pass
+PASS missing infrastructure shown separately
+PASS UI scopes passed state
+PASS UI exposes test command
+TOTAL 15 checks passed
