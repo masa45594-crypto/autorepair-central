@@ -90,6 +90,16 @@ def create_checkout_session(account,hub,price_id,success_url,cancel_url,key,cust
     if r.get('livemode') is not expected_livemode or not re.fullmatch('cs_[A-Za-z0-9_]+',r.get('id','')) or not r.get('url'):raise ValueError('unexpected checkout session response')
     return {'id':r['id'],'url':r['url']}
 
+def update_subscription_item_quantity(item_id,quantity,key,transport=post,allow_live=False):
+    """Set the current active-site quantity on a Stripe subscription item."""
+    expected_livemode=key_livemode(key,allow_live)
+    if not re.fullmatch(r'si_[A-Za-z0-9]+',item_id):raise ValueError('a Stripe subscription item ID (si_...) is required')
+    if type(quantity) is not int or not 1<=quantity<=100000:raise ValueError('site quantity must be between 1 and 100000')
+    identity=hashlib.sha256((item_id+'|'+str(quantity)).encode()).hexdigest()
+    r=transport('subscription_items/'+item_id,{'quantity':str(quantity)},key,identity)
+    if r.get('livemode') is not expected_livemode or r.get('id')!=item_id or r.get('quantity')!=quantity:raise ValueError('unexpected subscription item response')
+    return {'id':item_id,'quantity':quantity}
+
 def record_meter_event(event_name,customer_id,value,key,identifier,transport=post,allow_live=False):
     """Record the latest overage count for a Stripe Billing Meter in test mode.
 
