@@ -6,7 +6,7 @@ import urllib.error, urllib.request
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
-from stripe_draft import verify_webhook, create_checkout_session, create_portal_session, record_meter_event
+from stripe_draft import verify_webhook, create_checkout_session, create_portal_session, record_meter_event, update_subscription_item_quantity
 import mailer
 
 class Invalid(Exception): pass
@@ -303,13 +303,11 @@ class Store:
             r=dict(row);r.update(mode='pilot',currency='jpy',amount_yen=r['base']+r['peak']*r['unit'],billable=False,unsynced_hubs=unsynced)
             return r
 
-def _overage_item_id(items):
-    """Pick the subscription item whose price matches STRIPE_OVERAGE_PRICE_ID out of a
-    subscription's item list; falls back to the first item if the env var is unset or no
-    item matches, so a single-price (no overage configured) subscription still links."""
+def _subscription_item_id(items):
+    """Pick the recurring per-site item from a Stripe subscription."""
     if not items:return None
-    overage_price_id=os.environ.get('STRIPE_OVERAGE_PRICE_ID','')
-    matched=next((it for it in items if overage_price_id and (it.get('price') or {}).get('id')==overage_price_id),None)
+    price_id=os.environ.get('STRIPE_PRICE_ID','')
+    matched=next((it for it in items if price_id and (it.get('price') or {}).get('id')==price_id),None)
     return (matched or items[0]).get('id')
 
 def handle_stripe_event(store,event):
@@ -353,7 +351,7 @@ def handle_stripe_event(store,event):
                     try:
                         sub=stripe_get('subscriptions/'+subscription_id,key)
                         items=((sub.get('items') or {}).get('data') or [])
-                        item_id=_overage_item_id(items)
+                        item_id=_subscription_item_id(items)
                         if item_id:store.set_stripe_subscription(account,subscription_id,item_id,customer_id=stripe_customer)
                     except Exception:pass
             # Webhook responses are not seen by the customer, so email is the only delivery
@@ -371,7 +369,7 @@ def handle_stripe_event(store,event):
             account=meta.get('account')
             if not account:return {'action':'skipped','reason':'missing account metadata'}
             subscription_id=obj.get('id');items=((obj.get('items') or {}).get('data') or [])
-            item_id=_overage_item_id(items)
+            item_id=_subscription_item_id(items)
             if not subscription_id or not item_id:return {'action':'skipped','reason':'missing subscription or item id'}
             store.set_stripe_subscription(account,subscription_id,item_id,customer_id=obj.get('customer'))
             store.record_webhook(account,etype)
@@ -439,6 +437,18 @@ def sync_stripe_meter(store,account,period,current,sequence):
     try:
         if stripe_live_enabled():record_meter_event(event_name,customer,overage,key,identifier,allow_live=True)
         else:record_meter_event(event_name,customer,overage,key,identifier)
+    except Exception:pass
+
+def sync_stripe_site_quantity(store,account,current):
+    """Best-effort mirror of active sites to the Stripe subscription quantity."""
+    key=stripe_secret_key()
+    if not (key and os.environ.get('STRIPE_PRICE_ID','')):return
+    item_id=store.stripe_subscription_item(account)
+    if not item_id:return
+    try:
+        quantity=max(1,current)
+        if stripe_live_enabled():update_subscription_item_quantity(item_id,quantity,key,allow_live=True)
+        else:update_subscription_item_quantity(item_id,quantity,key)
     except Exception:pass
 
 def stripe_get(path,key):
@@ -530,7 +540,9 @@ def handler(store):
                     size=int(self.headers.get('Content-Length','0'))
                     if not 0<size<=8000000:raise Invalid('payload size')
                     r=store.snapshot(token,json.loads(self.rfile.read(size)))
-                    sync_stripe_meter(store,h['account'],r['month'],r['current'],r['sequence'])
+                    # A per-site subscription must never be combined with legacy metered overage.
+                    if os.environ.get('STRIPE_PRICE_ID'):sync_stripe_site_quantity(store,h['account'],r['current'])
+                    else:sync_stripe_meter(store,h['account'],r['month'],r['current'],r['sequence'])
                 elif self.command=='POST' and self.path=='/v1/stripe/test-checkout':
                     # Compatibility shim for an already-connected hub upgrading itself to a
                     # paid plan from inside its own WordPress admin -- distinct from the
@@ -665,7 +677,7 @@ def handler(store):
                     # guessing or colliding with an existing customer.
                     account='acct-'+secrets.token_hex(8);hub='hub-'+secrets.token_hex(8)
                     base=int(os.environ.get('SIGNUP_BASE','10000'));unit=int(os.environ.get('SIGNUP_UNIT','100'))
-                    session=create_checkout_session(account,hub,price_id,success_url,cancel_url,key,customer_email=email,base=base,unit=unit,overage_price_id=os.environ.get('STRIPE_OVERAGE_PRICE_ID') or None,allow_live=stripe_live_enabled())
+                    session=create_checkout_session(account,hub,price_id,success_url,cancel_url,key,customer_email=email,base=base,unit=unit,allow_live=stripe_live_enabled())
                     r={'url':session['url']}
                 else:return self.reply(404,{'error':'not_found'})
                 self.reply(200,r)
