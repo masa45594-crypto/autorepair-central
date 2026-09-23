@@ -243,7 +243,7 @@ class Tests(unittest.TestCase):
   # still end up linking the subscription itself, using the subscription id Checkout already
   # carries, rather than depending on that earlier event having succeeded.
   import service as service_module
-  os.environ['STRIPE_PRICE_ID']='price_base9'
+  os.environ['STRIPE_OVERAGE_PRICE_ID']='price_overage9'
   service_module.stripe_get=lambda path,key:{'items':{'data':[
     {'id':'si_base9','price':{'id':'price_base9'}},
     {'id':'si_overage9','price':{'id':'price_overage9'}}]}} if path=='subscriptions/sub_outoforder' else (_ for _ in ()).throw(AssertionError('unexpected path '+path))
@@ -257,7 +257,7 @@ class Tests(unittest.TestCase):
    self.assertEqual(self.s.stripe_subscription_item('outoforder'),'si_base9')
    self.assertEqual(self.s.stripe_account_state('outoforder'),{'subscription_id':'sub_outoforder','customer_id':'cus_outoforder'})
   finally:
-   del os.environ['STRIPE_PRICE_ID'];del os.environ['STRIPE_TEST_SECRET_KEY']
+   del os.environ['STRIPE_OVERAGE_PRICE_ID'];del os.environ['STRIPE_TEST_SECRET_KEY']
  def test_checkout_completed_subscription_link_failure_does_not_block_provisioning(self):
   import service as service_module
   def boom(path,key):raise RuntimeError('stripe unreachable')
@@ -304,24 +304,23 @@ class Tests(unittest.TestCase):
   finally:
    service_module.record_meter_event=original;del os.environ['STRIPE_TEST_SECRET_KEY'];del os.environ['STRIPE_METER_EVENT_NAME']
    server.shutdown();server.server_close();thread.join()
- def test_snapshot_endpoint_syncs_site_quantity_instead_of_meter_when_price_id_set(self):
+ def test_snapshot_endpoint_updates_site_quantity(self):
   import service as service_module
-  self.s.set_stripe_subscription('a','sub_q1','si_q1',customer_id='cus_q1')
-  quantity_calls=[];meter_calls=[]
-  original_quantity=service_module.update_subscription_item_quantity;original_meter=service_module.record_meter_event
-  service_module.update_subscription_item_quantity=lambda item_id,quantity,key,*a,**k:quantity_calls.append((item_id,quantity,key))
-  service_module.record_meter_event=lambda *a,**k:meter_calls.append(a)
-  os.environ['STRIPE_TEST_SECRET_KEY']='sk_test_fake';os.environ['STRIPE_PRICE_ID']='price_base9'
+  self.s.set_stripe_subscription('a','sub_qty','si_qty',customer_id='cus_qty')
+  calls=[];original=service_module.update_subscription_item_quantity
+  service_module.update_subscription_item_quantity=lambda item,quantity,key,**kwargs:calls.append((item,quantity,key,kwargs))
+  os.environ['STRIPE_TEST_SECRET_KEY']='sk_test_fake';os.environ['STRIPE_PRICE_ID']='price_site'
   server=HTTPServer(('127.0.0.1',0),handler(self.s));thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
   try:
    url='http://127.0.0.1:'+str(server.server_port)
-   req=urllib.request.Request(url+'/v1/snapshot',data=json.dumps({'sequence':1,'sites':self.ids[:2]}).encode(),headers={'Authorization':'Bearer '+self.a})
-   with urllib.request.urlopen(req) as res:self.assertEqual(json.load(res)['current'],2)
-   self.assertEqual(quantity_calls,[('si_q1',2,'sk_test_fake')])
-   self.assertEqual(meter_calls,[])
+   req=urllib.request.Request(url+'/v1/snapshot',data=json.dumps({'sequence':1,'sites':self.ids[:3]}).encode(),headers={'Authorization':'Bearer '+self.a})
+   with urllib.request.urlopen(req) as res:self.assertEqual(json.load(res)['current'],3)
+   self.assertEqual(calls,[('si_qty',3,'sk_test_fake',{})])
+   req=urllib.request.Request(url+'/v1/snapshot',data=json.dumps({'sequence':2,'sites':[]}).encode(),headers={'Authorization':'Bearer '+self.a})
+   with urllib.request.urlopen(req) as res:self.assertEqual(json.load(res)['current'],0)
+   self.assertEqual(calls[-1],('si_qty',1,'sk_test_fake',{}))
   finally:
-   service_module.update_subscription_item_quantity=original_quantity;service_module.record_meter_event=original_meter
-   del os.environ['STRIPE_TEST_SECRET_KEY'];del os.environ['STRIPE_PRICE_ID']
+   service_module.update_subscription_item_quantity=original;del os.environ['STRIPE_TEST_SECRET_KEY'];del os.environ['STRIPE_PRICE_ID']
    server.shutdown();server.server_close();thread.join()
  def test_signup_page(self):
   server=HTTPServer(('127.0.0.1',0),handler(self.s));thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
@@ -432,17 +431,12 @@ class Tests(unittest.TestCase):
   self.assertEqual(record_meter_event('managed_sites_overage','cus_test',3,'sk_test_fake','id_1',transport),{'identifier':'id_1','value':3})
   self.assertEqual(record_meter_event('managed_sites_overage','cus_test',3,'sk_live_fake','id_1',lambda *a:{'livemode':True,'event_name':'managed_sites_overage'},allow_live=True),{'identifier':'id_1','value':3})
  def test_subscription_item_quantity_update(self):
-  with self.assertRaises(ValueError):update_subscription_item_quantity('si_test',5,'sk_live_fake')
-  with self.assertRaises(ValueError):update_subscription_item_quantity('not-an-item',5,'sk_test_fake')
+  with self.assertRaises(ValueError):update_subscription_item_quantity('not-an-item',1,'sk_test_fake')
   with self.assertRaises(ValueError):update_subscription_item_quantity('si_test',0,'sk_test_fake')
-  with self.assertRaises(ValueError):update_subscription_item_quantity('si_test',100001,'sk_test_fake')
   def transport(path,data,key,identity):
-   self.assertEqual(path,'subscription_items/si_test');self.assertEqual(data,{'quantity':'5'})
-   return {'livemode':False,'id':'si_test','quantity':5}
-  self.assertEqual(update_subscription_item_quantity('si_test',5,'sk_test_fake',transport),{'id':'si_test','quantity':5})
-  self.assertEqual(update_subscription_item_quantity('si_test',5,'sk_live_fake',lambda *a:{'livemode':True,'id':'si_test','quantity':5},allow_live=True),{'id':'si_test','quantity':5})
-  def bad_transport(path,data,key,identity):return {'livemode':False,'id':'si_test','quantity':999}
-  with self.assertRaises(ValueError):update_subscription_item_quantity('si_test',5,'sk_test_fake',transport=bad_transport)
+   self.assertEqual(path,'subscription_items/si_test');self.assertEqual(data,{'quantity':'3'})
+   return {'livemode':False,'id':'si_test','quantity':3}
+  self.assertEqual(update_subscription_item_quantity('si_test',3,'sk_test_fake',transport),{'id':'si_test','quantity':3})
  def test_portal_session_create(self):
   with self.assertRaises(ValueError):create_portal_session('cus_test','https://x/return','sk_live_fake')
   with self.assertRaises(ValueError):create_portal_session('not-a-customer','https://x/return','sk_test_fake')

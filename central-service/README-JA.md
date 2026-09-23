@@ -327,6 +327,17 @@ SMTP環境変数が未設定の場合は送信自体が失敗として扱われ(
 済み: 価格・課金対象・締日(契約日基準)・遅延受付期限(72時間)・訂正(下書き段階のみ)・返金(全額・部分返金、記録のみ)・拠点トークンの失効化・確定/送信(テストモード、send_invoiceのみ)・Webhook署名検証と受信エンドポイント・Webhookからの自動provision/自動suspend配線・支払い結果の自動記録と滞納自動suspend/unsuspend(理由追跡付き)・**支出上限(警告表示のみ)**・Checkout Session作成関数・テスト購入画面`GET /signup`と公開申込エンドポイント`POST /v1/signup`(レート制限込み)・hub_tokenのメール自動配達・Customer Portalへの公開導線(管理用リンク方式)・複数拠点の自己追加(`POST /v1/manage/hubs`)・**既存拠点の自己アップグレード(WordPress管理画面互換、`/v1/stripe/test-checkout`・`test-status`・`test-portal`)**・**基本料金+Stripe Billing Meterによる従量課金(`STRIPE_OVERAGE_PRICE_ID`・`STRIPE_METER_EVENT_NAME`)**・データの信頼性向上(WAL・バックアップ・整合性チェック、SQLiteのまま)・負荷検証(ThreadingHTTPServerへの切り替えで接続拒否を解消)。
 決定済みで今回は実装しない: 本格的なPostgreSQL移行(複数インスタンス化が必要になるまで)、本格的なログイン機構(会員登録・パスワード。代わりにベアラー式の管理用トークンで自己サービスを実現)。
 残り: **実環境での結線テスト**(テストモードのStripeカードで、購入→サブスクリプション作成→サイト数変更に伴う数量同期→支払い失敗/解約時の新規登録停止、までを通しで確認)。コードとしては揃っていますが、`STRIPE_SECRET_KEY`・`STRIPE_WEBHOOK_SECRET`をRenderへ設定し、Stripeダッシュボード側のWebhook宛先登録を済ませてからでないと検証できません。ここまでで**自己申込から利用開始・契約管理(拠点追加・解約・支出上限設定)・滞納の自動処理・訂正・返金・Stripe数量同期までの一連の流れの部品が揃いました**。実際に使うにはStripeダッシュボードでの商品/価格作成・SMTP設定・`MANAGE_BASE_URL`等の環境変数設定も必要です。
+
+### 本番Stripeの有効化（明示的な二重確認）
+
+`sk_live_...` を使うCheckout・Customer Portal・Billing Meter送信は、秘密鍵だけでは有効になりません。Renderに次の両方を設定した場合だけ本番モードになります。
+
+| 環境変数 | 値 |
+|---|---|
+| `STRIPE_SECRET_KEY` | Stripe本番の秘密鍵 (`sk_live_...`) |
+| `STRIPE_LIVE_ENABLED` | `1` |
+
+この二重確認は、既存のテスト環境に本番鍵を誤って貼り付けただけで実課金が始まる事故を防ぐためです。`STRIPE_PRICE_ID`・`SIGNUP_SUCCESS_URL`・`SIGNUP_CANCEL_URL`・`STRIPE_WEBHOOK_SECRET`・`PORTAL_RETURN_URL` も揃うまでは `/signup` を公開しないでください。**実課金の可否は、Stripe本番Webhookで購入・解約・支払い失敗を確認してから判断します。**
 この版のSQLite・全件スナップショット・WordPressオプション送信待ちは小規模検証向けです。10万件という入力上限は処理実績ではありません。
 
 公式資料:
