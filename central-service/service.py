@@ -13,6 +13,11 @@ class Invalid(Exception): pass
 class Conflict(Exception): pass
 class Unauthorized(Exception): pass
 
+JPLABEL_LIVE='\u672c\u756a'
+JPLABEL_TEST='\u30c6\u30b9\u30c8'
+JPMSG_LIVE='\u3053\u308c\u306f\u672c\u756a\u74b0\u5883\u306e\u304a\u7533\u3057\u8fbc\u307f\u753b\u9762\u3067\u3059\u3002\u5b9f\u969b\u306e\u30ab\u30fc\u30c9\u60c5\u5831\u3092\u5165\u529b\u3059\u308b\u3068\u8ab2\u91d1\u3055\u308c\u307e\u3059\u3002'
+JPMSG_TEST='\u3053\u308c\u306f\u30c6\u30b9\u30c8\u30e2\u30fc\u30c9\u306e\u304a\u7533\u3057\u8fbc\u307f\u753b\u9762\u3067\u3059\u3002\u5b9f\u969b\u306e\u8ab2\u91d1\u306f\u767a\u751f\u3057\u307e\u305b\u3093\u3002'
+
 SIGNUP_PAGE_HTML="""<!doctype html><html lang="ja"><head><meta charset="utf-8"><title>AutoRepair AI Hosting お申し込み(__SIGNUP_MODE_LABEL__)</title></head>
 <body style="font-family:sans-serif;max-width:480px;margin:80px auto;text-align:center">
 <h1>AutoRepair AI Hosting</h1>
@@ -505,11 +510,14 @@ def handler(store):
                     # configuration gate as /v1/signup, so an unfinished deployment doesn't
                     # advertise a half-built signup flow.
                     if not all((os.environ.get('STRIPE_PRICE_ID'),os.environ.get('SIGNUP_SUCCESS_URL'),os.environ.get('SIGNUP_CANCEL_URL'),stripe_secret_key())):return self.reply(404,{'error':'not_found'})
+                    mode_ok=True
                     try:mode=stripe_mode(stripe_secret_key())
-                    except Exception:mode='unknown'
-        　　　　　　 if mode=='live':mode_label='本番';mode_message='これは本番環境のお申し込み画面です。実際のクレジットカード情報を入力すると課金されます。'
-        　　　　　　 else:mode_label='テスト';mode_message='これはテストモードのお申し込み画面です。実際の課金は発生しません。'
-        　　　　　　 page_html=SIGNUP_PAGE_HTML.replace('__SIGNUP_MODE_LABEL__',mode_label).replace('__SIGNUP_MODE_MESSAGE__',mode_message)
+                    except Exception:mode_ok=False
+                    live_flag=mode_ok and mode=='live'
+                    labels={True:JPLABEL_LIVE,False:JPLABEL_TEST}
+                    messages={True:JPMSG_LIVE,False:JPMSG_TEST}
+                    page_html=SIGNUP_PAGE_HTML.replace('__SIGNUP_MODE_LABEL__',labels[live_flag]).replace('__SIGNUP_MODE_MESSAGE__',messages[live_flag])
+
 
                   body=page_html.encode('utf-8')
                     self.send_response(200);self.send_header('Content-Type','text/html; charset=utf-8');self.send_header('Cache-Control','no-store');self.send_header('Content-Length',str(len(body)));self.end_headers();self.wfile.write(body);return
