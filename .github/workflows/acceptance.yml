@@ -6,6 +6,13 @@ on:
       - "autorepair-ai-hosting-beta-*.zip"
       - ".github/workflows/acceptance.yml"
       - "central-service/**"
+  push:
+    branches: [main]
+    paths:
+      - "ci/**"
+      - "autorepair-ai-hosting-beta-*.zip"
+      - ".github/workflows/acceptance.yml"
+      - "central-service/**"
   workflow_dispatch:
     inputs:
       stripe_sandbox:
