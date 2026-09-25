@@ -6,8 +6,7 @@ import urllib.error, urllib.request
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
-overage_price_id=os.environ.get('STRIPE_OVERAGE_PRICE_ID') or None
-session=create_checkout_session(account,hub,price_id,success_url,cancel_url,key,customer_email=email,base=base,unit=unit,overage_price_id=overage_price_id,allow_live=stripe_live_enabled())
+from stripe_draft import verify_webhook, create_checkout_session, create_portal_session, record_meter_event, update_subscription_item_quantity
 import mailer
 
 class Invalid(Exception): pass
@@ -541,9 +540,12 @@ def handler(store):
                     size=int(self.headers.get('Content-Length','0'))
                     if not 0<size<=8000000:raise Invalid('payload size')
                     r=store.snapshot(token,json.loads(self.rfile.read(size)))
-                    # A per-site subscription must never be combined with legacy metered overage.
-                    if os.environ.get('STRIPE_PRICE_ID'):sync_stripe_site_quantity(store,h['account'],r['current'])
-                    else:sync_stripe_meter(store,h['account'],r['month'],r['current'],r['sequence'])
+                    # An overage-metered subscription (or legacy meter event) must take
+                    # priority over the simpler per-site quantity mirror.
+                    if os.environ.get('STRIPE_OVERAGE_PRICE_ID') or os.environ.get('STRIPE_METER_EVENT_NAME'):
+                        sync_stripe_meter(store,h['account'],r['month'],r['current'],r['sequence'])
+                    elif os.environ.get('STRIPE_PRICE_ID'):
+                        sync_stripe_site_quantity(store,h['account'],r['current'])
                 elif self.command=='POST' and self.path=='/v1/stripe/test-checkout':
                     # Compatibility shim for an already-connected hub upgrading itself to a
                     # paid plan from inside its own WordPress admin -- distinct from the
@@ -678,7 +680,8 @@ def handler(store):
                     # guessing or colliding with an existing customer.
                     account='acct-'+secrets.token_hex(8);hub='hub-'+secrets.token_hex(8)
                     base=int(os.environ.get('SIGNUP_BASE','10000'));unit=int(os.environ.get('SIGNUP_UNIT','100'))
-                    session=create_checkout_session(account,hub,price_id,success_url,cancel_url,key,customer_email=email,base=base,unit=unit,allow_live=stripe_live_enabled())
+                    overage_price_id=os.environ.get('STRIPE_OVERAGE_PRICE_ID') or None
+                    session=create_checkout_session(account,hub,price_id,success_url,cancel_url,key,customer_email=email,base=base,unit=unit,overage_price_id=overage_price_id,allow_live=stripe_live_enabled())
                     r={'url':session['url']}
                 else:return self.reply(404,{'error':'not_found'})
                 self.reply(200,r)
