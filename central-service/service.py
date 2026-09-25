@@ -506,7 +506,7 @@ def handler(store):
                     # advertise a half-built signup flow.
                     if not all((os.environ.get('STRIPE_PRICE_ID'),os.environ.get('SIGNUP_SUCCESS_URL'),os.environ.get('SIGNUP_CANCEL_URL'),stripe_secret_key())):return self.reply(404,{'error':'not_found'})
                     try:mode=stripe_mode(stripe_secret_key())
-        　　　　　　 except Exception:mode='unknown'
+                    except Exception:mode='unknown'
         　　　　　　 if mode=='live':mode_label='本番';mode_message='これは本番環境のお申し込み画面です。実際のクレジットカード情報を入力すると課金されます。'
         　　　　　　 else:mode_label='テスト';mode_message='これはテストモードのお申し込み画面です。実際の課金は発生しません。'
         　　　　　　 page_html=SIGNUP_PAGE_HTML.replace('__SIGNUP_MODE_LABEL__',mode_label).replace('__SIGNUP_MODE_MESSAGE__',mode_message)
