@@ -13,10 +13,10 @@ class Invalid(Exception): pass
 class Conflict(Exception): pass
 class Unauthorized(Exception): pass
 
-SIGNUP_PAGE_HTML="""<!doctype html><html lang="ja"><head><meta charset="utf-8"><title>AutoRepair AI Hosting お申し込み(テスト)</title></head>
+SIGNUP_PAGE_HTML="""<!doctype html><html lang="ja"><head><meta charset="utf-8"><title>AutoRepair AI Hosting お申し込み(__SIGNUP_MODE_LABEL__)</title></head>
 <body style="font-family:sans-serif;max-width:480px;margin:80px auto;text-align:center">
 <h1>AutoRepair AI Hosting</h1>
-<p>これはテストモードのお申し込み画面です。実際の課金は発生しません。</p>
+<p>__SIGNUP_MODE_MESSAGE__</p>
 <p><input id="email" type="email" placeholder="メールアドレス(任意)" style="width:100%;padding:8px;box-sizing:border-box;margin-bottom:12px"></p>
 <button id="go" style="padding:10px 24px;font-size:16px">お申し込みへ進む</button>
 <p id="err" style="color:#c00"></p>
@@ -505,7 +505,13 @@ def handler(store):
                     # configuration gate as /v1/signup, so an unfinished deployment doesn't
                     # advertise a half-built signup flow.
                     if not all((os.environ.get('STRIPE_PRICE_ID'),os.environ.get('SIGNUP_SUCCESS_URL'),os.environ.get('SIGNUP_CANCEL_URL'),stripe_secret_key())):return self.reply(404,{'error':'not_found'})
-                    body=SIGNUP_PAGE_HTML.encode('utf-8')
+                    try:mode=stripe_mode(stripe_secret_key())
+        　　　　　　 except Exception:mode='unknown'
+        　　　　　　 if mode=='live':mode_label='本番';mode_message='これは本番環境のお申し込み画面です。実際のクレジットカード情報を入力すると課金されます。'
+        　　　　　　 else:mode_label='テスト';mode_message='これはテストモードのお申し込み画面です。実際の課金は発生しません。'
+        　　　　　　 page_html=SIGNUP_PAGE_HTML.replace('__SIGNUP_MODE_LABEL__',mode_label).replace('__SIGNUP_MODE_MESSAGE__',mode_message)
+
+                  body=page_html.encode('utf-8')
                     self.send_response(200);self.send_header('Content-Type','text/html; charset=utf-8');self.send_header('Cache-Control','no-store');self.send_header('Content-Length',str(len(body)));self.end_headers();self.wfile.write(body);return
                 elif self.command=='GET' and self.path.startswith('/v1/manage/portal'):
                     # A GET (not POST) so this works as a plain link clicked from email.
