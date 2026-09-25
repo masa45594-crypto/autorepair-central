@@ -519,7 +519,7 @@ def handler(store):
                     page_html=SIGNUP_PAGE_HTML.replace('__SIGNUP_MODE_LABEL__',labels[live_flag]).replace('__SIGNUP_MODE_MESSAGE__',messages[live_flag])
 
 
-                  body=page_html.encode('utf-8')
+                    body=page_html.encode('utf-8')
                     self.send_response(200);self.send_header('Content-Type','text/html; charset=utf-8');self.send_header('Cache-Control','no-store');self.send_header('Content-Length',str(len(body)));self.end_headers();self.wfile.write(body);return
                 elif self.command=='GET' and self.path.startswith('/v1/manage/portal'):
                     # A GET (not POST) so this works as a plain link clicked from email.
