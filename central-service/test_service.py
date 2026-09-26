@@ -337,6 +337,19 @@ class Tests(unittest.TestCase):
    finally:
     for k in env:del os.environ[k]
   finally:server.shutdown();server.server_close();thread.join()
+ def test_signup_complete_page(self):
+  # The Checkout success_url destination: always available (no signup config
+  # gate) and, critically, has no form to resubmit that could trigger another
+  # real charge if a customer lands here twice.
+  server=HTTPServer(('127.0.0.1',0),handler(self.s));thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
+  try:
+   url='http://127.0.0.1:'+str(server.server_port)
+   with urllib.request.urlopen(url+'/signup/complete') as res:
+    self.assertEqual(res.status,200);self.assertIn('text/html',res.headers['Content-Type'])
+    body=res.read().decode()
+    self.assertIn('お申し込みありがとうございました',body)
+    self.assertNotIn('/v1/signup',body)
+  finally:server.shutdown();server.server_close();thread.join()
  def test_stripe_event_email_delivery(self):
   import service as service_module
   original=service_module.mailer.send;sent=[]

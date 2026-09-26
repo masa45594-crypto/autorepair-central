@@ -43,6 +43,14 @@ document.getElementById('go').addEventListener('click',async function(){
 </body></html>
 """
 
+SIGNUP_COMPLETE_HTML="""<!doctype html><html lang="ja"><head><meta charset="utf-8"><title>AutoRepair AI Hosting お申し込み完了</title></head>
+<body style="font-family:sans-serif;max-width:480px;margin:80px auto;text-align:center">
+<h1>お申し込みありがとうございました</h1>
+<p>ご登録いただいたメールアドレスに、拠点トークンと管理用リンクをお送りしました。</p>
+<p>数分待ってもメールが届かない場合は、迷惑メールフォルダをご確認のうえ、サポートまでお問い合わせください。</p>
+</body></html>
+"""
+
 def utc(): return datetime.now(timezone.utc).isoformat()
 def digest(x): return hashlib.sha256(x.encode()).hexdigest()
 def period_start(now,anchor_day):
@@ -520,6 +528,13 @@ def handler(store):
 
 
                     body=page_html.encode('utf-8')
+                    self.send_response(200);self.send_header('Content-Type','text/html; charset=utf-8');self.send_header('Cache-Control','no-store');self.send_header('Content-Length',str(len(body)));self.end_headers();self.wfile.write(body);return
+                elif self.command=='GET' and self.path=='/signup/complete':
+                    # Checkout's success_url destination: a static thank-you page with no
+                    # form to resubmit, so a customer landing here twice (back button,
+                    # refresh) cannot accidentally trigger a second real charge the way
+                    # redirecting back to /signup itself would.
+                    body=SIGNUP_COMPLETE_HTML.encode('utf-8')
                     self.send_response(200);self.send_header('Content-Type','text/html; charset=utf-8');self.send_header('Cache-Control','no-store');self.send_header('Content-Length',str(len(body)));self.end_headers();self.wfile.write(body);return
                 elif self.command=='GET' and self.path.startswith('/v1/manage/portal'):
                     # A GET (not POST) so this works as a plain link clicked from email.
