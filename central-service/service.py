@@ -371,11 +371,11 @@ def handle_stripe_event(store,event):
             # channel; a delivery failure must not undo the provision that already happened.
             email=(obj.get('customer_details') or {}).get('email') or obj.get('customer_email')
             delivered=False
-            if email:
-            try:
-                mailer.send(email,'ご利用開始のご案内',mailer.hub_token_email_body(account,hub,token,manage_url))
-                delivered=True
-            except Exception as e:print('MAIL SEND FAILED:',e);delivered=False
+                        if email:
+                try:
+                    mailer.send(email,'ご利用開始のご案内',mailer.hub_token_email_body(account,hub,token,manage_url))
+                    delivered=True
+                except Exception as e:print('MAIL SEND FAILED:',e);delivered=False
 
 
  
