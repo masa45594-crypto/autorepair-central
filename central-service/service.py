@@ -372,14 +372,12 @@ def handle_stripe_event(store,event):
             email=(obj.get('customer_details') or {}).get('email') or obj.get('customer_email')
             delivered=False
             if email:
-                try:
-                  mailer.send(email,'ご利用開始のご案内',mailer.hub_token_email_body(account,hub,token,manage_url))
-                  delivered=True
-                except Exception as e:
-                import traceback
-                print(f"MAIL SEND FAILED: {e}")
-                traceback.print_exc()
-                delivered=False
+            try:
+                mailer.send(email,'ご利用開始のご案内',mailer.hub_token_email_body(account,hub,token,manage_url))
+                delivered=True
+            except Exception as e:print('MAIL SEND FAILED:',e);delivered=False
+
+
  
             store.record_webhook(account,etype)
             return {'action':'provisioned','account':account,'hub':hub,'hub_token':token,'email_delivered':delivered}
