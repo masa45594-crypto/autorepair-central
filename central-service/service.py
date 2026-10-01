@@ -6,22 +6,17 @@ import urllib.error, urllib.request
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
-from stripe_draft import verify_webhook, create_checkout_session, create_portal_session, record_meter_event, update_subscription_item_quantity
+from stripe_draft import verify_webhook, create_checkout_session, create_portal_session, record_meter_event, create_subscription_item, update_subscription_item_quantity, delete_subscription_item
 import mailer
 
 class Invalid(Exception): pass
 class Conflict(Exception): pass
 class Unauthorized(Exception): pass
 
-JPLABEL_LIVE='\u672c\u756a'
-JPLABEL_TEST='\u30c6\u30b9\u30c8'
-JPMSG_LIVE='\u3053\u308c\u306f\u672c\u756a\u74b0\u5883\u306e\u304a\u7533\u3057\u8fbc\u307f\u753b\u9762\u3067\u3059\u3002\u5b9f\u969b\u306e\u30ab\u30fc\u30c9\u60c5\u5831\u3092\u5165\u529b\u3059\u308b\u3068\u8ab2\u91d1\u3055\u308c\u307e\u3059\u3002'
-JPMSG_TEST='\u3053\u308c\u306f\u30c6\u30b9\u30c8\u30e2\u30fc\u30c9\u306e\u304a\u7533\u3057\u8fbc\u307f\u753b\u9762\u3067\u3059\u3002\u5b9f\u969b\u306e\u8ab2\u91d1\u306f\u767a\u751f\u3057\u307e\u305b\u3093\u3002'
-
-SIGNUP_PAGE_HTML="""<!doctype html><html lang="ja"><head><meta charset="utf-8"><title>AutoRepair AI Hosting お申し込み(__SIGNUP_MODE_LABEL__)</title></head>
+SIGNUP_PAGE_HTML="""<!doctype html><html lang="ja"><head><meta charset="utf-8"><title>AutoRepair AI Hosting お申し込み(テスト)</title></head>
 <body style="font-family:sans-serif;max-width:480px;margin:80px auto;text-align:center">
 <h1>AutoRepair AI Hosting</h1>
-<p>__SIGNUP_MODE_MESSAGE__</p>
+<p>これはテストモードのお申し込み画面です。実際の課金は発生しません。</p>
 <p><input id="email" type="email" placeholder="メールアドレス(任意)" style="width:100%;padding:8px;box-sizing:border-box;margin-bottom:12px"></p>
 <button id="go" style="padding:10px 24px;font-size:16px">お申し込みへ進む</button>
 <p id="err" style="color:#c00"></p>
@@ -43,14 +38,6 @@ document.getElementById('go').addEventListener('click',async function(){
 </body></html>
 """
 
-SIGNUP_COMPLETE_HTML="""<!doctype html><html lang="ja"><head><meta charset="utf-8"><title>AutoRepair AI Hosting お申し込み完了</title></head>
-<body style="font-family:sans-serif;max-width:480px;margin:80px auto;text-align:center">
-<h1>お申し込みありがとうございました</h1>
-<p>ご登録いただいたメールアドレスに、拠点トークンと管理用リンクをお送りしました。</p>
-<p>数分待ってもメールが届かない場合は、迷惑メールフォルダをご確認のうえ、サポートまでお問い合わせください。</p>
-</body></html>
-"""
-
 def utc(): return datetime.now(timezone.utc).isoformat()
 def digest(x): return hashlib.sha256(x.encode()).hexdigest()
 def period_start(now,anchor_day):
@@ -64,7 +51,7 @@ class Store:
         self.path=path
         with self.db() as c:
             c.executescript('''
-            CREATE TABLE IF NOT EXISTS accounts(id TEXT PRIMARY KEY, base INTEGER NOT NULL, unit INTEGER NOT NULL, anchor_day INTEGER NOT NULL DEFAULT 1, suspended TEXT NOT NULL DEFAULT '', suspend_reason TEXT NOT NULL DEFAULT '', spending_cap INTEGER NOT NULL DEFAULT 0, stripe_subscription_id TEXT NOT NULL DEFAULT '', stripe_subscription_item_id TEXT NOT NULL DEFAULT '', stripe_customer_id TEXT NOT NULL DEFAULT '', created TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS accounts(id TEXT PRIMARY KEY, base INTEGER NOT NULL, unit INTEGER NOT NULL, anchor_day INTEGER NOT NULL DEFAULT 1, suspended TEXT NOT NULL DEFAULT '', suspend_reason TEXT NOT NULL DEFAULT '', spending_cap INTEGER NOT NULL DEFAULT 0, stripe_subscription_id TEXT NOT NULL DEFAULT '', stripe_subscription_item_id TEXT NOT NULL DEFAULT '', stripe_overage_item_id TEXT NOT NULL DEFAULT '', stripe_customer_id TEXT NOT NULL DEFAULT '', created TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS hubs(id TEXT PRIMARY KEY, account TEXT NOT NULL REFERENCES accounts(id), token_hash TEXT UNIQUE NOT NULL, sequence INTEGER NOT NULL DEFAULT 0, payload_hash TEXT NOT NULL DEFAULT '', updated TEXT NOT NULL DEFAULT '', revoked TEXT NOT NULL DEFAULT '');
             CREATE TABLE IF NOT EXISTS sites(hub TEXT NOT NULL REFERENCES hubs(id), site TEXT NOT NULL, PRIMARY KEY(hub,site));
             CREATE TABLE IF NOT EXISTS months(account TEXT NOT NULL, month TEXT NOT NULL, peak INTEGER NOT NULL, base INTEGER NOT NULL, unit INTEGER NOT NULL, PRIMARY KEY(account,month));
@@ -87,6 +74,8 @@ class Store:
             try: c.execute("ALTER TABLE accounts ADD COLUMN stripe_subscription_id TEXT NOT NULL DEFAULT ''")
             except sqlite3.OperationalError: pass
             try: c.execute("ALTER TABLE accounts ADD COLUMN stripe_subscription_item_id TEXT NOT NULL DEFAULT ''")
+            except sqlite3.OperationalError: pass
+            try: c.execute("ALTER TABLE accounts ADD COLUMN stripe_overage_item_id TEXT NOT NULL DEFAULT ''")
             except sqlite3.OperationalError: pass
             try: c.execute("ALTER TABLE accounts ADD COLUMN stripe_customer_id TEXT NOT NULL DEFAULT ''")
             except sqlite3.OperationalError: pass
@@ -178,6 +167,15 @@ class Store:
         with self.db() as c:
             row=c.execute('SELECT stripe_subscription_item_id FROM accounts WHERE id=?',(account,)).fetchone()
             return row['stripe_subscription_item_id'] or None if row else None
+    def stripe_overage_item(self,account):
+        with self.db() as c:
+            row=c.execute('SELECT stripe_overage_item_id FROM accounts WHERE id=?',(account,)).fetchone()
+            return row['stripe_overage_item_id'] or None if row else None
+    def set_stripe_overage_item(self,account,item_id):
+        if item_id is not None and not re.fullmatch(r'si_[A-Za-z0-9]+',item_id):raise Invalid('invalid stripe subscription item id')
+        with self.db() as c:
+            if not c.execute('SELECT 1 FROM accounts WHERE id=?',(account,)).fetchone():raise Invalid('unknown account')
+            c.execute('UPDATE accounts SET stripe_overage_item_id=? WHERE id=?',(item_id or '',account))
     def record_webhook(self,account,etype,now=None):
         """Best-effort marker of 'this account has actually received a verified webhook',
         for the WordPress-side contract-check screen. A no-op (0 rows) if the account
@@ -316,12 +314,18 @@ class Store:
             r=dict(row);r.update(mode='pilot',currency='jpy',amount_yen=r['base']+r['peak']*r['unit'],billable=False,unsynced_hubs=unsynced)
             return r
 
-def _subscription_item_id(items):
-    """Pick the recurring per-site item from a Stripe subscription."""
+def _base_subscription_item_id(items):
+    """Pick the $29 base-plan item from a Stripe subscription."""
     if not items:return None
     price_id=os.environ.get('STRIPE_PRICE_ID','')
     matched=next((it for it in items if price_id and (it.get('price') or {}).get('id')==price_id),None)
     return (matched or items[0]).get('id')
+
+def _overage_subscription_item_id(items):
+    """Pick the $3-per-site overage item, if it has been created already."""
+    price_id=os.environ.get('STRIPE_OVERAGE_PRICE_ID','')
+    matched=next((it for it in items if price_id and (it.get('price') or {}).get('id')==price_id),None)
+    return matched.get('id') if matched else None
 
 def handle_stripe_event(store,event):
     """Wire specific verified Stripe events to account actions; everything else is left as
@@ -364,8 +368,10 @@ def handle_stripe_event(store,event):
                     try:
                         sub=stripe_get('subscriptions/'+subscription_id,key)
                         items=((sub.get('items') or {}).get('data') or [])
-                        item_id=_subscription_item_id(items)
-                        if item_id:store.set_stripe_subscription(account,subscription_id,item_id,customer_id=stripe_customer)
+                        item_id=_base_subscription_item_id(items)
+                        if item_id:
+                            store.set_stripe_subscription(account,subscription_id,item_id,customer_id=stripe_customer)
+                            store.set_stripe_overage_item(account,_overage_subscription_item_id(items))
                     except Exception:pass
             # Webhook responses are not seen by the customer, so email is the only delivery
             # channel; a delivery failure must not undo the provision that already happened.
@@ -375,19 +381,17 @@ def handle_stripe_event(store,event):
                 try:
                     mailer.send(email,'ご利用開始のご案内',mailer.hub_token_email_body(account,hub,token,manage_url))
                     delivered=True
-                except Exception as e:print('MAIL SEND FAILED:',e);delivered=False
-
-
- 
+                except Exception:delivered=False
             store.record_webhook(account,etype)
             return {'action':'provisioned','account':account,'hub':hub,'hub_token':token,'email_delivered':delivered}
         if etype=='customer.subscription.created':
             account=meta.get('account')
             if not account:return {'action':'skipped','reason':'missing account metadata'}
             subscription_id=obj.get('id');items=((obj.get('items') or {}).get('data') or [])
-            item_id=_subscription_item_id(items)
+            item_id=_base_subscription_item_id(items)
             if not subscription_id or not item_id:return {'action':'skipped','reason':'missing subscription or item id'}
             store.set_stripe_subscription(account,subscription_id,item_id,customer_id=obj.get('customer'))
+            store.set_stripe_overage_item(account,_overage_subscription_item_id(items))
             store.record_webhook(account,etype)
             return {'action':'subscription_linked','account':account,'subscription':subscription_id}
         if etype=='customer.subscription.deleted':
@@ -437,6 +441,14 @@ def included_sites():
     if not 0<=value<=100000:return (_ for _ in ()).throw(ValueError('STRIPE_INCLUDED_SITES is out of range'))
     return value
 
+def with_billing_contract(usage):
+    """Return the public billing state without exposing Stripe identifiers or secrets."""
+    key=stripe_secret_key()
+    live=bool(key and stripe_live_enabled() and os.environ.get('STRIPE_PRICE_ID') and os.environ.get('STRIPE_OVERAGE_PRICE_ID'))
+    result=dict(usage)
+    result.update(mode='live' if live else 'test',billable=live,included_sites=included_sites(),overage_sites=max(0,usage['current']-included_sites()))
+    return result
+
 def sync_stripe_meter(store,account,period,current,sequence):
     """Best-effort report of the *current* extra-site count to the Billing Meter.
 
@@ -455,17 +467,30 @@ def sync_stripe_meter(store,account,period,current,sequence):
         else:record_meter_event(event_name,customer,overage,key,identifier)
     except Exception:pass
 
-def sync_stripe_site_quantity(store,account,current):
-    """Best-effort mirror of active sites to the Stripe subscription quantity."""
-    key=stripe_secret_key()
-    if not (key and os.environ.get('STRIPE_PRICE_ID','')):return
-    item_id=store.stripe_subscription_item(account)
-    if not item_id:return
-    try:
-        quantity=max(1,current)
-        if stripe_live_enabled():update_subscription_item_quantity(item_id,quantity,key,allow_live=True)
-        else:update_subscription_item_quantity(item_id,quantity,key)
-    except Exception:pass
+def sync_stripe_overage_quantity(store,account,current):
+    """Synchronise only sites 11+ to Stripe's separate $3 subscription item.
+
+    A failed Stripe update is deliberately raised to the caller: hiding it would let an
+    extra site operate without a matching charge. The base $29 item is never modified.
+    """
+    key=stripe_secret_key();overage_price=os.environ.get('STRIPE_OVERAGE_PRICE_ID','')
+    if not (key and overage_price):raise Invalid('Stripe overage billing is not configured')
+    state=store.stripe_account_state(account);subscription_id=state['subscription_id']
+    if not subscription_id:raise Invalid('no active Stripe subscription for this account')
+    live=stripe_get('subscriptions/'+subscription_id,key)
+    if live.get('status') not in ('active','trialing'):raise Invalid('Stripe subscription is not active')
+    quantity=max(0,current-included_sites());item_id=store.stripe_overage_item(account)
+    kwargs={'allow_live':True} if stripe_live_enabled() else {}
+    if quantity==0:
+        if item_id:
+            delete_subscription_item(item_id,key,**kwargs);store.set_stripe_overage_item(account,None)
+        return {'overage_sites':0,'item_id':None}
+    if item_id:
+        update_subscription_item_quantity(item_id,quantity,key,**kwargs)
+    else:
+        created=create_subscription_item(subscription_id,overage_price,quantity,key,**kwargs)
+        item_id=created['id'];store.set_stripe_overage_item(account,item_id)
+    return {'overage_sites':quantity,'item_id':item_id}
 
 def stripe_get(path,key):
     # A plain authenticated GET; stripe_draft.post() only ever POSTs, and this shim needs to
@@ -514,30 +539,14 @@ def handler(store):
         def dispatch(self):
             try:
                 auth=self.headers.get('Authorization','');token=auth[7:] if auth.startswith('Bearer ') else ''
-                if self.command=='GET' and self.path=='/v1/usage': r=store.status(token)
+                if self.command=='GET' and self.path=='/v1/usage': r=with_billing_contract(store.status(token))
                 elif self.command=='GET' and self.path=='/signup':
                     # A minimal test-purchase screen: it only calls the existing POST
                     # /v1/signup and redirects to the Checkout URL that returns. Same
                     # configuration gate as /v1/signup, so an unfinished deployment doesn't
                     # advertise a half-built signup flow.
                     if not all((os.environ.get('STRIPE_PRICE_ID'),os.environ.get('SIGNUP_SUCCESS_URL'),os.environ.get('SIGNUP_CANCEL_URL'),stripe_secret_key())):return self.reply(404,{'error':'not_found'})
-                    mode_ok=True
-                    try:mode=stripe_mode(stripe_secret_key())
-                    except Exception:mode_ok=False
-                    live_flag=mode_ok and mode=='live'
-                    labels={True:JPLABEL_LIVE,False:JPLABEL_TEST}
-                    messages={True:JPMSG_LIVE,False:JPMSG_TEST}
-                    page_html=SIGNUP_PAGE_HTML.replace('__SIGNUP_MODE_LABEL__',labels[live_flag]).replace('__SIGNUP_MODE_MESSAGE__',messages[live_flag])
-
-
-                    body=page_html.encode('utf-8')
-                    self.send_response(200);self.send_header('Content-Type','text/html; charset=utf-8');self.send_header('Cache-Control','no-store');self.send_header('Content-Length',str(len(body)));self.end_headers();self.wfile.write(body);return
-                elif self.command=='GET' and self.path=='/signup/complete':
-                    # Checkout's success_url destination: a static thank-you page with no
-                    # form to resubmit, so a customer landing here twice (back button,
-                    # refresh) cannot accidentally trigger a second real charge the way
-                    # redirecting back to /signup itself would.
-                    body=SIGNUP_COMPLETE_HTML.encode('utf-8')
+                    body=SIGNUP_PAGE_HTML.encode('utf-8')
                     self.send_response(200);self.send_header('Content-Type','text/html; charset=utf-8');self.send_header('Cache-Control','no-store');self.send_header('Content-Length',str(len(body)));self.end_headers();self.wfile.write(body);return
                 elif self.command=='GET' and self.path.startswith('/v1/manage/portal'):
                     # A GET (not POST) so this works as a plain link clicked from email.
@@ -572,12 +581,26 @@ def handler(store):
                     size=int(self.headers.get('Content-Length','0'))
                     if not 0<size<=8000000:raise Invalid('payload size')
                     r=store.snapshot(token,json.loads(self.rfile.read(size)))
-                    # An overage-metered subscription (or legacy meter event) must take
-                    # priority over the simpler per-site quantity mirror.
-                    if os.environ.get('STRIPE_OVERAGE_PRICE_ID') or os.environ.get('STRIPE_METER_EVENT_NAME'):
-                        sync_stripe_meter(store,h['account'],r['month'],r['current'],r['sequence'])
-                    elif os.environ.get('STRIPE_PRICE_ID'):
-                        sync_stripe_site_quantity(store,h['account'],r['current'])
+                    # The base $29 item and the $3 extra-site item are deliberately separate.
+                    if os.environ.get('STRIPE_OVERAGE_PRICE_ID'):r['billing_sync']=sync_stripe_overage_quantity(store,h['account'],r['current'])
+                    else:sync_stripe_meter(store,h['account'],r['month'],r['current'],r['sequence'])
+                    r=with_billing_contract(r)
+                elif self.command=='POST' and self.path=='/v1/registration-check':
+                    # Called before the WordPress plugin persists a new site. It makes the
+                    # eleventh and later registration conditional on a successful Stripe
+                    # subscription-item update instead of merely showing an estimate.
+                    with store.db() as c:h=store.auth(c,token)
+                    size=int(self.headers.get('Content-Length','0'))
+                    if not 0<size<=1000:raise Invalid('payload size')
+                    body=json.loads(self.rfile.read(size)
+                    )
+                    site=body.get('site') if isinstance(body,dict) else None
+                    if not isinstance(site,str) or not re.fullmatch('[a-f0-9]{64}',site):raise Invalid('invalid site id')
+                    with store.db() as c:
+                        already=c.execute('SELECT 1 FROM sites WHERE hub=? AND site=?',(h['id'],site)).fetchone() is not None
+                        current=store.count(c,h['account'])+(0 if already else 1)
+                    billing=sync_stripe_overage_quantity(store,h['account'],current)
+                    r={'allowed':True,'current':current,'included_sites':included_sites(),'billing_sync':billing}
                 elif self.command=='POST' and self.path=='/v1/stripe/test-checkout':
                     # Compatibility shim for an already-connected hub upgrading itself to a
                     # paid plan from inside its own WordPress admin -- distinct from the
@@ -712,8 +735,7 @@ def handler(store):
                     # guessing or colliding with an existing customer.
                     account='acct-'+secrets.token_hex(8);hub='hub-'+secrets.token_hex(8)
                     base=int(os.environ.get('SIGNUP_BASE','10000'));unit=int(os.environ.get('SIGNUP_UNIT','100'))
-                    overage_price_id=os.environ.get('STRIPE_OVERAGE_PRICE_ID') or None
-                    session=create_checkout_session(account,hub,price_id,success_url,cancel_url,key,customer_email=email,base=base,unit=unit,overage_price_id=overage_price_id,allow_live=stripe_live_enabled())
+                    session=create_checkout_session(account,hub,price_id,success_url,cancel_url,key,customer_email=email,base=base,unit=unit,allow_live=stripe_live_enabled())
                     r={'url':session['url']}
                 else:return self.reply(404,{'error':'not_found'})
                 self.reply(200,r)

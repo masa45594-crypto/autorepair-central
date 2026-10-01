@@ -100,6 +100,33 @@ def update_subscription_item_quantity(item_id,quantity,key,transport=post,allow_
     if r.get('livemode') is not expected_livemode or r.get('id')!=item_id or r.get('quantity')!=quantity:raise ValueError('unexpected subscription item response')
     return {'id':item_id,'quantity':quantity}
 
+def create_subscription_item(subscription_id,price_id,quantity,key,transport=post,allow_live=False):
+    """Add the recurring overage price to an existing subscription.
+
+    The base plan is always a separate item with quantity 1, so this never changes
+    the $29 base price. Stripe's normal proration behaviour is used.
+    """
+    expected_livemode=key_livemode(key,allow_live)
+    if not re.fullmatch(r'sub_[A-Za-z0-9]+',subscription_id):raise ValueError('a Stripe subscription ID (sub_...) is required')
+    if not re.fullmatch(r'price_[A-Za-z0-9]+',price_id):raise ValueError('a Stripe Price ID (price_...) is required')
+    if type(quantity) is not int or not 1<=quantity<=100000:raise ValueError('site quantity must be between 1 and 100000')
+    identity=hashlib.sha256((subscription_id+'|'+price_id+'|'+str(quantity)).encode()).hexdigest()
+    r=transport('subscription_items',{'subscription':subscription_id,'price':price_id,'quantity':str(quantity)},key,identity)
+    if r.get('livemode') is not expected_livemode or not re.fullmatch(r'si_[A-Za-z0-9]+',r.get('id','')) or r.get('quantity')!=quantity:raise ValueError('unexpected subscription item response')
+    return {'id':r['id'],'quantity':quantity}
+
+def delete_subscription_item(item_id,key,transport=post,allow_live=False):
+    """Remove the overage item after the account returns to the included allowance."""
+    expected_livemode=key_livemode(key,allow_live)
+    if not re.fullmatch(r'si_[A-Za-z0-9]+',item_id):raise ValueError('a Stripe subscription item ID (si_...) is required')
+    identity=hashlib.sha256((item_id+'|delete').encode()).hexdigest()
+    if transport is post:
+        req=urllib.request.Request('https://api.stripe.com/v1/subscription_items/'+item_id,headers={'Authorization':'Bearer '+key,'Idempotency-Key':identity},method='DELETE')
+        with urllib.request.urlopen(req,timeout=20) as response:r=json.load(response)
+    else:r=transport('subscription_items/'+item_id,{'_method':'DELETE'},key,identity)
+    if r.get('livemode') is not expected_livemode or r.get('id')!=item_id or r.get('deleted') is not True:raise ValueError('unexpected subscription item deletion response')
+    return {'id':item_id,'deleted':True}
+
 def record_meter_event(event_name,customer_id,value,key,identifier,transport=post,allow_live=False):
     """Record the latest overage count for a Stripe Billing Meter in test mode.
 
