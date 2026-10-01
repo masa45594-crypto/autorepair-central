@@ -1,5 +1,8 @@
 name: AutoRepair acceptance
 on:
+  push:
+    branches:
+      - main
   pull_request:
     paths:
       - "ci/**"
@@ -34,7 +37,9 @@ jobs:
       - name: Run plugin unit tests (isolated WP stubs, no Docker/MySQL)
         run: |
           mkdir -p /tmp/aaihb-unit
-          unzip -q autorepair-ai-hosting-beta-0.20.6.zip -d /tmp/aaihb-unit
+          plugin_zip="$(find . -maxdepth 1 -name 'autorepair-ai-hosting-beta-*.zip' -printf '%f\n' | sort -V | tail -n 1)"
+          test -n "$plugin_zip"
+          unzip -q "$plugin_zip" -d /tmp/aaihb-unit
           php /tmp/aaihb-unit/autorepair-ai-hosting-beta/tests/contracts.php
   restore:
     runs-on: ubuntu-24.04
