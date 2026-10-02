@@ -72,8 +72,15 @@ def run(key):
         _, product = stripe_api('POST', 'products', key, {'name': 'AAIHB CI ' + secrets.token_hex(4)})
         _, price = stripe_api('POST', 'prices', key, {'product': product['id'], 'unit_amount': '100', 'currency': 'jpy', 'recurring[interval]': 'month'})
         os.environ['STRIPE_PRICE_ID'] = price['id']
+        # FIX 1: 追加サイト（11 サイト目以降）用の $3 相当 Price を別途つくる。
+        # これが無いと service.py の /v1/snapshot はメーター経路に落ち、
+        # 基本アイテムの quantity は 1 のまま変わらない（＝旧テストは永久に不合格）。
+        _, overage_price = stripe_api('POST', 'prices', key, {'product': product['id'], 'unit_amount': '300', 'currency': 'jpy', 'recurring[interval]': 'month'})
+        os.environ['STRIPE_OVERAGE_PRICE_ID'] = overage_price['id']
 
         from service import Store, handler  # env vars above must be set first
+        # FIX 2: included_sites() の値をコード側で仮定しないよう、モジュールごと掴む。
+        import service as _svc
         with tempfile.TemporaryDirectory() as tmp:
             store = Store(str(Path(tmp) / 'test.db'))
             token = store.provision('a', 'hub1')
@@ -119,14 +126,30 @@ def run(key):
             code, body = call(base + '/v1/stripe/test-portal', auth, {'return_url': 'https://example.com/account'}, 'POST')
             result['checks']['portal_session'] = code == 200 and body.get('mode') == 'test' and str(body.get('portal_url', '')).startswith('https://billing.stripe.com/')
 
-            # /v1/snapshot syncs the subscription item's quantity to the
-            # observed peak automatically now (sync_stripe_quantity), no
-            # separate admin sync call.
-            sites = [hashlib.sha256(str(i).encode()).hexdigest() for i in range(3)]
-            call(base + '/v1/snapshot', auth, {'sequence': 1, 'sites': sites}, 'POST')
-            item_id = ((subscription.get('items') or {}).get('data') or [{}])[0].get('id')
-            _, item = stripe_api('GET', 'subscription_items/' + item_id, key) if item_id else (None, {})
-            result['checks']['usage_synced_to_subscription_quantity'] = item.get('quantity') == 3
+            # FIX 3: 基本 $29 アイテムは設計上けっして変更されない
+            # (sync_stripe_overage_quantity の docstring: "The base $29 item is
+            # never modified.")。追加サイトは別アイテム
+            # (STRIPE_OVERAGE_PRICE_ID) で課金される。
+            # したがって検証すべきは「基本アイテムは 1 のまま」＋「オーバー
+            # アイテムの数量 = 超過サイト数」。基本アイテムの quantity が 3 に
+            # なることを期待していたのは旧設計 (sync_stripe_quantity) の名残。
+            try:
+                included = int(_svc.included_sites())
+            except Exception:
+                included = 10
+            sites = [hashlib.sha256(str(i).encode()).hexdigest() for i in range(included + 3)]
+            code, body = call(base + '/v1/snapshot', auth, {'sequence': 1, 'sites': sites}, 'POST')
+            sync = body.get('billing_sync') or {}
+            overage_item_id = sync.get('item_id')
+            _, overage_item = stripe_api('GET', 'subscription_items/' + overage_item_id, key) if overage_item_id else (None, {})
+            base_item_id = ((subscription.get('items') or {}).get('data') or [{}])[0].get('id')
+            _, base_item = stripe_api('GET', 'subscription_items/' + base_item_id, key) if base_item_id else (None, {})
+            result['checks']['usage_synced_to_subscription_quantity'] = (
+                code == 200
+                and sync.get('overage_sites') == 3
+                and overage_item.get('quantity') == 3
+                and base_item.get('quantity') == 1
+            )
 
             result['status'] = 'passed' if all(result['checks'].values()) else 'failed'
     except Exception as error:
