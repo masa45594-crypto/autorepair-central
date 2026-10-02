@@ -72,11 +72,12 @@ def run(key):
         _, product = stripe_api('POST', 'products', key, {'name': 'AAIHB CI ' + secrets.token_hex(4)})
         _, price = stripe_api('POST', 'prices', key, {'product': product['id'], 'unit_amount': '100', 'currency': 'jpy', 'recurring[interval]': 'month'})
         os.environ['STRIPE_PRICE_ID'] = price['id']
-        # FIX 1: 追加サイト（11 サイト目以降）用の $3 相当 Price を別途つくる。
-        # これが無いと service.py の /v1/snapshot はメーター経路に落ち、
-        # 基本アイテムの quantity は 1 のまま変わらない（＝旧テストは永久に不合格）。
+        # FIX 1: 追加サイト（11 サイト目以降）用の 300 円相当 Price を別途つくる。
+        # ただし env への登録は最初の test-checkout が終わったあとで行う。
+        # create_checkout_session() は overage price を line_items[1] として
+        # 追加するが、quantity を伴わない第 2 の line item は Stripe が
+        # 拒否するため、ここで env を立てると最初の checkout が失敗する。
         _, overage_price = stripe_api('POST', 'prices', key, {'product': product['id'], 'unit_amount': '300', 'currency': 'jpy', 'recurring[interval]': 'month'})
-        os.environ['STRIPE_OVERAGE_PRICE_ID'] = overage_price['id']
 
         from service import Store, handler  # env vars above must be set first
         # FIX 2: included_sites() の値をコード側で仮定しないよう、モジュールごと掴む。
@@ -90,8 +91,12 @@ def run(key):
             auth = {'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json'}
 
             code, body = call(base + '/v1/stripe/test-checkout', auth, {'success_url': 'https://example.com/ok', 'cancel_url': 'https://example.com/cancel'}, 'POST')
+            result['checkout_debug'] = {'code': code, 'body': body}
             checkout_url = body.get('checkout_url', '')
             result['checks']['checkout_session'] = code == 200 and body.get('mode') == 'test' and checkout_url.startswith('https://checkout.stripe.com/')
+
+            # 最初の checkout はここまで。以降は追加サイト課金を有効にする。
+            os.environ['STRIPE_OVERAGE_PRICE_ID'] = overage_price['id']
 
             # A hosted Checkout page can't be completed headlessly. Create the
             # subscription directly against the real Stripe test API instead,
@@ -126,13 +131,13 @@ def run(key):
             code, body = call(base + '/v1/stripe/test-portal', auth, {'return_url': 'https://example.com/account'}, 'POST')
             result['checks']['portal_session'] = code == 200 and body.get('mode') == 'test' and str(body.get('portal_url', '')).startswith('https://billing.stripe.com/')
 
-            # FIX 3: 基本 $29 アイテムは設計上けっして変更されない
+            # FIX 3: 基本アイテムは設計上けっして変更されない
             # (sync_stripe_overage_quantity の docstring: "The base $29 item is
             # never modified.")。追加サイトは別アイテム
-            # (STRIPE_OVERAGE_PRICE_ID) で課金される。
-            # したがって検証すべきは「基本アイテムは 1 のまま」＋「オーバー
-            # アイテムの数量 = 超過サイト数」。基本アイテムの quantity が 3 に
-            # なることを期待していたのは旧設計 (sync_stripe_quantity) の名残。
+            # (STRIPE_OVERAGE_PRICE_ID) で課金される。したがって検証すべきは
+            # 「基本アイテムは 1 のまま」＋「オーバーアイテムの数量 = 超過サイト数」。
+            # 基本アイテムの quantity が 3 になることを期待していたのは
+            # 旧設計 (sync_stripe_quantity) の名残。
             try:
                 included = int(_svc.included_sites())
             except Exception:
@@ -144,6 +149,8 @@ def run(key):
             _, overage_item = stripe_api('GET', 'subscription_items/' + overage_item_id, key) if overage_item_id else (None, {})
             base_item_id = ((subscription.get('items') or {}).get('data') or [{}])[0].get('id')
             _, base_item = stripe_api('GET', 'subscription_items/' + base_item_id, key) if base_item_id else (None, {})
+            # 次回の実行で原因が分かるよう、判定に使った実測値をそのまま残す。
+            result['usage_debug'] = {'snapshot_code': code, 'snapshot_body': body, 'included': included, 'site_count': len(sites), 'overage_item_id': overage_item_id, 'overage_item': overage_item, 'base_item_id': base_item_id, 'base_item': base_item}
             result['checks']['usage_synced_to_subscription_quantity'] = (
                 code == 200
                 and sync.get('overage_sites') == 3
