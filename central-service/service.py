@@ -44,7 +44,34 @@ def period_start(now,anchor_day):
     # Billing period anchored to the account's contract day (1-28, to stay valid in every month).
     dt=datetime.fromisoformat(now)
     y,m=(dt.year,dt.month) if dt.day>=anchor_day else ((dt.year,dt.month-1) if dt.month>1 else (dt.year-1,12))
-    return f'{y:04d}-{m:02d}-{anchor_day:02d}'
+   
+    def _resolve_invoice_period(store,obj,meta):
+    """Resolve (account,month) for an invoice.* event.
+
+    Metadata is preferred; when 'month' is absent (the Checkout Session that creates
+    the subscription does not set it yet) fall back to the account's own anchor day
+    plus the invoice period_start, so a paid invoice is still recorded instead of
+    being silently skipped.
+    """
+    account=(meta.get('account') or '').strip()
+    month=(meta.get('month') or '').strip()
+    if not account:
+        customer=obj.get('customer') or ''
+        if isinstance(customer,str) and customer.startswith('cus_'):
+            with store.db() as c:
+                row=c.execute('SELECT id FROM accounts WHERE stripe_customer_id=?',(customer,)).fetchone()
+            if row:account=row['id']
+    if not account:return None,None,'no account (metadata missing and customer not linked)'
+    if not month:
+        start=obj.get('period_start')
+        if isinstance(start,(int,float)) and start>0:
+            with store.db() as c:
+                row=c.execute('SELECT anchor_day FROM accounts WHERE id=?',(account,)).fetchone()
+            if row:
+                month=period_start(datetime.fromtimestamp(start,timezone.utc).isoformat(),row['anchor_day'])
+    if not month:return account,None,'no month (metadata missing and no usable period_start)'
+    return account,month,None
+
 
 class Store:
     def __init__(self, path):
@@ -385,8 +412,9 @@ def handle_stripe_event(store,event):
             store.record_webhook(account,etype)
             return {'action':'provisioned','account':account,'hub':hub,'hub_token':token,'email_delivered':delivered}
         if etype=='customer.subscription.created':
-            account=meta.get('account')
-            if not account:return {'action':'skipped','reason':'missing account metadata'}
+                        account,month,why=_resolve_invoice_period(store,obj,meta)
+            if not account or not month:return {'action':'skipped','reason':why or 'missing account/month metadata'}
+
             subscription_id=obj.get('id');items=((obj.get('items') or {}).get('data') or [])
             item_id=_base_subscription_item_id(items)
             if not subscription_id or not item_id:return {'action':'skipped','reason':'missing subscription or item id'}
