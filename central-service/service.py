@@ -44,8 +44,10 @@ def period_start(now,anchor_day):
     # Billing period anchored to the account's contract day (1-28, to stay valid in every month).
     dt=datetime.fromisoformat(now)
     y,m=(dt.year,dt.month) if dt.day>=anchor_day else ((dt.year,dt.month-1) if dt.month>1 else (dt.year-1,12))
-   
-    def _resolve_invoice_period(store,obj,meta):
+    return f'{y:04d}-{m:02d}-{anchor_day:02d}'
+
+
+def _resolve_invoice_period(store,obj,meta):
     """Resolve (account,month) for an invoice.* event.
 
     Metadata is preferred; when 'month' is absent (the Checkout Session that creates
@@ -71,7 +73,6 @@ def period_start(now,anchor_day):
                 month=period_start(datetime.fromtimestamp(start,timezone.utc).isoformat(),row['anchor_day'])
     if not month:return account,None,'no month (metadata missing and no usable period_start)'
     return account,month,None
-
 
 class Store:
     def __init__(self, path):
@@ -412,9 +413,8 @@ def handle_stripe_event(store,event):
             store.record_webhook(account,etype)
             return {'action':'provisioned','account':account,'hub':hub,'hub_token':token,'email_delivered':delivered}
         if etype=='customer.subscription.created':
-                        account,month,why=_resolve_invoice_period(store,obj,meta)
-            if not account or not month:return {'action':'skipped','reason':why or 'missing account/month metadata'}
-
+            account=meta.get('account')
+            if not account:return {'action':'skipped','reason':'missing account metadata'}
             subscription_id=obj.get('id');items=((obj.get('items') or {}).get('data') or [])
             item_id=_base_subscription_item_id(items)
             if not subscription_id or not item_id:return {'action':'skipped','reason':'missing subscription or item id'}
@@ -429,8 +429,8 @@ def handle_stripe_event(store,event):
             store.record_webhook(account,etype)
             return {'action':'suspended','account':account}
         if etype in ('invoice.paid','invoice.payment_failed'):
-            account=meta.get('account');month=meta.get('month')
-            if not account or not month:return {'action':'skipped','reason':'missing account/month metadata'}
+            account,month,why=_resolve_invoice_period(store,obj,meta)
+            if not account or not month:return {'action':'skipped','reason':why or 'missing account/month metadata'}
             status='paid' if etype=='invoice.paid' else 'failed'
             amount=obj.get('amount_paid') if status=='paid' else obj.get('amount_due')
             store.record_payment(account,month,status,amount)
