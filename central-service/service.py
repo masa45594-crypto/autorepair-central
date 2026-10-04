@@ -180,6 +180,17 @@ class Store:
                          ON CONFLICT(account) DO UPDATE SET token_hash=excluded.token_hash,stripe_customer=excluded.stripe_customer,created=excluded.created''',
                       (account,digest(token),stripe_customer,now or utc()))
         return token
+    def auth_manage_or_hub(self,c,token):
+        """Accept either the account's management token (the billing-link credential) or any
+        hub token belonging to that account (what the WordPress site itself stores). Returns
+        the account id. The hub-token path exists so the self-service screen can list, revoke
+        and issue hubs without the operator opening the Render shell; it can never reach
+        another account's rows because the hub row itself carries the account."""
+        if isinstance(token,str) and re.fullmatch('[a-f0-9]{64}',token):
+            row=c.execute('SELECT account FROM management_tokens WHERE token_hash=?',(digest(token),)).fetchone()
+            if row:return row['account']
+        h=self.auth(c,token)
+        return h['account']
     def auth_management(self,c,token):
         if not isinstance(token,str) or not re.fullmatch('[a-f0-9]{64}',token):raise Unauthorized()
         row=c.execute('SELECT * FROM management_tokens WHERE token_hash=?',(digest(token),)).fetchone()
@@ -643,12 +654,12 @@ def handler(store):
                 elif self.command=='GET' and self.path=='/v1/manage/hubs':
                     # Read-only list for the self-service screen: which hubs exist, how many
                     # sites each reports, and which ones have stopped syncing.
-                    with store.db() as c:row=store.auth_management(c,token)
+                    with store.db() as c:row={'account':store.auth_manage_or_hub(c,token)}
                     r={'account':row['account'],'hubs':store.list_hubs(row['account'])}
                 elif self.command=='POST' and self.path=='/v1/manage/hubs/revoke':
                     # Same management-token auth. Revoking is ownership-checked (revoke_owned)
                     # and only stops future counting; already observed peaks are not rewritten.
-                    with store.db() as c:row=store.auth_management(c,token)
+                    with store.db() as c:row={'account':store.auth_manage_or_hub(c,token)}
                     size=int(self.headers.get('Content-Length','0'))
                     if not 0<size<=1000:raise Invalid('payload size')
                     body=json.loads(self.rfile.read(size))
@@ -660,12 +671,12 @@ def handler(store):
                     # Same management-token auth as the portal link, via the normal
                     # Authorization header this time since this is a plain JSON API call,
                     # not a link meant to be clicked directly.
-                    with store.db() as c:row=store.auth_management(c,token)
+                    with store.db() as c:row={'account':store.auth_manage_or_hub(c,token)}
                     hub,hub_token=store.issue_additional_hub(row['account'])
                     r={'hub':hub,'hub_token':hub_token}
                 elif self.command=='POST' and self.path=='/v1/manage/spending-cap':
                     # Self-service budget alert: warning-only, never blocks usage (see result()).
-                    with store.db() as c:row=store.auth_management(c,token)
+                    with store.db() as c:row={'account':store.auth_manage_or_hub(c,token)}
                     size=int(self.headers.get('Content-Length','0'))
                     if not 0<size<=1000:raise Invalid('payload size')
                     body=json.loads(self.rfile.read(size))
