@@ -949,6 +949,45 @@ def alert_loop(store,to_addr,threshold_hours=48,interval_hours=6,sleep=time.slee
                 mailer.send(to_addr,'[AutoRepair中央] Webhook未受信の警告',body)
         except Exception:pass
         sleep(max(60.0,float(interval_hours)*3600.0))
+def reconcile_loop(store,to_addr,day=5,interval_hours=6,from_stripe=False,sleep=time.sleep,now_fn=None):
+    """Monthly billing reconciliation, run inside the web service for the same reason as
+    alert_loop: a separate Render Cron Job cannot mount this service's disk. Once per calendar
+    month, on or after `day`, compare observed peaks with recorded payments and email the
+    result. Writes only when from_stripe is on, and then only through record_payment().
+    Best-effort: every failure is swallowed so monitoring can never take the API down."""
+    now_fn=now_fn or utc
+    while True:
+        try:
+            now=now_fn();stamp=now[:7]
+            done=any(r['mode']=='monthly' and (r['started'] or '').startswith(stamp)
+                     for r in store.reconciliation_runs(50))
+            if not done and int(now[8:10])>=day:
+                month=store.latest_month()
+                rows=store.reconcile_month(month) if month else []
+                recorded=0;note=''
+                if from_stripe:
+                    key=os.environ.get('STRIPE_SECRET_KEY','')
+                    if not key:note='\n(Stripe照合はスキップ: STRIPE_SECRET_KEY 未設定)\n'
+                    else:
+                        results=[]
+                        for acct in store.account_ids():
+                            try:results.append(backfill_account(store,acct,key,apply=True,now=now))
+                            except Exception as exc:results.append({'account':acct,'skipped':True,'reason':'error: '+str(exc),'actions':[]})
+                        recorded=sum(1 for r in results for x in (r.get('actions') or []) if x.get('action')=='recorded')
+                        note='\nStripe照合で記録した件数: %d\n'%recorded
+                        rows=store.reconcile_month(month) if month else rows
+                bad=[r for r in rows if r['state'] in ('missing_payment','amount_mismatch','unpaid')]
+                body='[AutoRepair中央] 月次突合レポート (%s)\n\n'%stamp
+                body+='対象月: %s\n'%(month or '観測なし')
+                body+=note+'\n'
+                body+='\n'.join('・%s 観測peak=%s 請求予定=%s円 記録=%s(%s) 判定=%s'%(
+                        r['account'],r['peak'],r['expected_yen'],r['recorded_yen'],r['recorded_status'],r['state']) for r in rows)
+                body+='\n\n要確認: %d件\n'%len(bad)
+                store.record_reconciliation(now,'monthly',bool(from_stripe),len(rows),recorded,
+                                            json.dumps(rows,ensure_ascii=False),now=now)
+                mailer.send(to_addr,'[AutoRepair中央] 月次突合レポート (%s)'%stamp,body)
+        except Exception:pass
+        sleep(max(60.0,float(interval_hours)*3600.0))
 if __name__=='__main__':
     p=argparse.ArgumentParser();p.add_argument('--db',default=os.environ.get('AAIHB_DB','usage.sqlite3'));sub=p.add_subparsers(dest='command',required=True)
     s=sub.add_parser('serve')
@@ -967,6 +1006,7 @@ if __name__=='__main__':
     s.add_argument('--from-stripe',action='store_true',help="read each account's paid invoices from Stripe and backfill missing payments")
     s.add_argument('--apply',action='store_true',help='with --from-stripe, actually record the missing payments (default: report only, nothing is written)')
     s.add_argument('--account',help='limit the Stripe backfill to one account id')
+    s.add_argument('--notify',action='store_true',help='also email this report to RECONCILE_TO (falls back to ALERT_TO)')
     s=sub.add_parser('backup');s.add_argument('target',help='path to write a consistent point-in-time copy to; safe to run against a live server')
     s=sub.add_parser('check',help='run PRAGMA integrity_check and exit non-zero if it finds damage')
     a=p.parse_args();os.umask(0o077);store=Store(a.db)
@@ -1006,6 +1046,16 @@ if __name__=='__main__':
             rows=store.reconcile_month(month)
             store.record_reconciliation(started,'local',False,len(rows),0,json.dumps(rows,ensure_ascii=False))
             print(json.dumps({'mode':'local','month':month,'rows':rows},ensure_ascii=False))
+            if a.notify:
+                to=os.environ.get('RECONCILE_TO') or os.environ.get('ALERT_TO','')
+                if not to:print(json.dumps({'error':'RECONCILE_TO/ALERT_TO not configured'}));sys.exit(2)
+                bad=[r for r in rows if r['state'] in ('missing_payment','amount_mismatch','unpaid')]
+                body='[AutoRepair中央] 月次突合レポート (手動実行)\n\n対象月: %s\n\n'%month
+                body+='\n'.join('・%s 観測peak=%s 請求予定=%s円 記録=%s(%s) 判定=%s'%(
+                        r['account'],r['peak'],r['expected_yen'],r['recorded_yen'],r['recorded_status'],r['state']) for r in rows)
+                body+='\n\n要確認: %d件\n'%len(bad)
+                mailer.send(to,'[AutoRepair中央] 月次突合レポート (手動実行)',body)
+                print(json.dumps({'notified_to':to,'rows':len(rows),'needs_review':len(bad)},ensure_ascii=False))
     elif a.command=='backup':store.backup(a.target);print(json.dumps({'backed_up_to':a.target}))
     elif a.command=='check':
         result=store.check();print(json.dumps({'integrity_check':result}))
@@ -1015,4 +1065,6 @@ if __name__=='__main__':
         # closes it before returning; a single slow client must not stall every other hub.
         if os.environ.get('ALERT_TO'):
             threading.Thread(target=alert_loop,args=(store,os.environ['ALERT_TO'],int(os.environ.get('ALERT_HOURS','48')),float(os.environ.get('ALERT_INTERVAL_HOURS','6'))),daemon=True).start()
+        if os.environ.get('RECONCILE_TO') or os.environ.get('ALERT_TO'):
+            threading.Thread(target=reconcile_loop,args=(store,os.environ.get('RECONCILE_TO') or os.environ['ALERT_TO'],int(os.environ.get('RECONCILE_DAY','5')),float(os.environ.get('RECONCILE_INTERVAL_HOURS','6')),os.environ.get('RECONCILE_FROM_STRIPE','0')=='1'),daemon=True).start()
         ThreadingHTTPServer((a.host,a.port),handler(store)).serve_forever()
