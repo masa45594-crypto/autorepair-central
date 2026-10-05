@@ -17,15 +17,29 @@ except ImportError:
         try: msvcrt.locking(f.fileno(), msvcrt.LK_LOCK, 1)
         except OSError: pass
 
+def _invoice_amount(usage):
+    """Invoice total for either pricing model: USD cents when the export is USD-first."""
+    if usage.get('currency')=='usd':return usage['estimate_usd_cents']
+    return usage['amount_yen']
+
 def plan(usage,customer,days_until_due=14):
     if usage.get('mode')!='pilot' or usage.get('billable') is not False:raise ValueError('pilot export required')
     if not re.fullmatch('cus_[A-Za-z0-9]+',customer):raise ValueError('test customer required')
-    for k in ('peak','base','unit','amount_yen'):
+    usd=(usage.get('currency')=='usd')
+    keys=('peak','included_sites','base_usd_cents','unit_usd_cents','estimate_usd_cents') if usd else ('peak','base','unit','amount_yen')
+    for k in keys:
         if type(usage.get(k)) is not int or usage[k]<0:raise ValueError('nonnegative integer required')
-    if usage['amount_yen']!=usage['base']+usage['unit']*usage['peak']:raise ValueError('amount mismatch')
-    if usage['amount_yen']>99999999:raise ValueError('pilot amount limit; large invoices require separate design')
+    # One place decides the invoice total, in the model's own unit: USD cents when the export
+    # is USD-first (exactly what Stripe stores as unit_amount), yen for the legacy export.
+    if usd:
+        if usage['estimate_usd_cents']!=usage['base_usd_cents']+usage['unit_usd_cents']*max(0,usage['peak']-usage['included_sites']):raise ValueError('amount mismatch')
+        amount=usage['estimate_usd_cents'];currency='usd'
+    else:
+        if _invoice_amount(usage)!=usage['base']+usage['unit']*usage['peak']:raise ValueError('amount mismatch')
+        amount=_invoice_amount(usage);currency='jpy'
+    if amount>99999999:raise ValueError('pilot amount limit; large invoices require separate design')
     if type(days_until_due) is not int or not 1<=days_until_due<=90:raise ValueError('days_until_due must be between 1 and 90')
-    return {'customer':customer,'currency':'jpy','amount':usage['amount_yen'],
+    return {'customer':customer,'currency':currency,'amount':amount,
             'description':'TEST ONLY AutoRepair '+usage['month']+' peak='+str(usage['peak']),
             'auto_advance':'false','pending_invoice_items_behavior':'exclude',
             # send_invoice (not charge_automatically): the customer pays via Stripe's hosted
@@ -179,7 +193,7 @@ def send(usage,customer,state_dir,key,transport=post):
             r=transport('invoices',{k:payload[k] for k in ('customer','currency','description','auto_advance','pending_invoice_items_behavior','collection_method','days_until_due','metadata[account]','metadata[month]')},key,identity+'-invoice')
             if r.get('livemode') is not False or r.get('status')!='draft' or not re.fullmatch('in_[A-Za-z0-9]+',r.get('id','')):raise ValueError('unexpected invoice response')
             state['invoice']=r['id'];persist()
-        r=transport('invoiceitems',{'customer':customer,'invoice':state['invoice'],'currency':'jpy','amount':payload['amount'],'description':payload['description']},key,identity+'-item')
+        r=transport('invoiceitems',{'customer':customer,'invoice':state['invoice'],'currency':payload['currency'],'amount':payload['amount'],'description':payload['description']},key,identity+'-item')
         if r.get('livemode') is not False or not r.get('id'):raise ValueError('unexpected item response')
         state['item']=r['id'];state['complete']=True;persist();return state
 
