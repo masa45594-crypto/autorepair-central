@@ -143,6 +143,7 @@ class Store:
             except sqlite3.OperationalError: pass
             try: c.execute('ALTER TABLE accounts ADD COLUMN spending_cap INTEGER NOT NULL DEFAULT 0')
             except sqlite3.OperationalError: pass
+            migrate_pricing_to_usd_cents(c)
             try: c.execute("ALTER TABLE accounts ADD COLUMN stripe_subscription_id TEXT NOT NULL DEFAULT ''")
             except sqlite3.OperationalError: pass
             try: c.execute("ALTER TABLE accounts ADD COLUMN stripe_subscription_item_id TEXT NOT NULL DEFAULT ''")
@@ -231,14 +232,19 @@ class Store:
                            "ORDER BY a.id",(month,month)).fetchall()
         out=[]
         for r in rows:
-            expected=None if r['peak'] is None else r['base']+r['unit']*r['peak']
+            # Compared in USD cents, against Stripe's own amount: only sites above the
+            # plan's included allowance are charged, so a peak inside the allowance
+            # expects the base price alone.
+            if r['peak'] is None:billable_sites=None;expected=None
+            else:billable_sites,expected=billing_amounts(r['base'],r['unit'],r['peak'],included_sites())
             if r['peak'] is None and r['amount'] is None:state='no_observation'
             elif r['amount'] is None:state='missing_payment'
             elif r['status']!='paid':state='unpaid'
             elif expected is not None and r['amount']!=expected:state='amount_mismatch'
             else:state='ok'
-            out.append({'account':r['account'],'peak':r['peak'],'expected_yen':expected,
-                        'recorded_status':r['status'],'recorded_yen':r['amount'],'state':state})
+            out.append({'account':r['account'],'peak':r['peak'],'billable_sites':billable_sites,
+                        'expected_usd_cents':expected,'expected_yen':(None if expected is None else cents_to_yen(expected)),
+                        'recorded_status':r['status'],'recorded_usd_cents':r['amount'],'state':state})
         return out
     def record_reconciliation(self,started,mode,apply,accounts,recorded,detail,now=None):
         """Audit trail: one row per reconcile run, so a monthly gap stays visible afterwards."""
@@ -380,7 +386,10 @@ class Store:
         hub='hub-'+secrets.token_hex(8)
         token=self.provision(account,hub,acc['base'],acc['unit'],acc['anchor_day'])
         return hub,token
-    def provision(self,account,hub,base=10000,unit=100,anchor_day=None,now=None):
+    def provision(self,account,hub,base=None,unit=None,anchor_day=None,now=None):
+        # Defaults come from the environment so a Stripe price change never needs a code edit.
+        base=price_base_usd_cents() if base is None else base
+        unit=price_unit_usd_cents() if unit is None else unit
         if not all(re.fullmatch(r'[a-z0-9_-]{1,64}',x) for x in (account,hub)):raise Invalid('invalid account or hub ID')
         if type(base) is not int or type(unit) is not int or min(base,unit)<0:raise Invalid('invalid pricing')
         now=now or utc()
@@ -434,10 +443,17 @@ class Store:
         m=c.execute('SELECT * FROM months WHERE account=? AND month=?',(h['account'],period)).fetchone()
         stale=c.execute("SELECT COUNT(*) FROM hubs WHERE account=? AND revoked='' AND (updated='' OR updated<?)",(h['account'],datetime.fromtimestamp(datetime.fromisoformat(now).timestamp()-7200,timezone.utc).isoformat())).fetchone()[0]
         cap=c.execute('SELECT spending_cap FROM accounts WHERE id=?',(h['account'],)).fetchone()['spending_cap']
-        estimate=m['base']+m['peak']*m['unit']
+        # The charge is computed in USD cents -- what Stripe actually stores -- and yen is
+        # derived for display, so the two can never drift apart by an exchange rate.
+        included=included_sites()
+        billable_sites,estimate_cents=billing_amounts(m['base'],m['unit'],m['peak'],included)
+        base_yen,unit_yen=cents_to_yen(m['base']),cents_to_yen(m['unit'])
+        # The plugin's integrity check is estimate_yen == base_yen + unit_yen*peak, so the
+        # display keeps that shape; the authoritative figures stay in cents.
+        estimate_yen=base_yen+unit_yen*m['peak']
         current=self.count(c,h['account'])
         # Warning only: a cap never blocks new site registrations or usage (see README).
-        return dict(mode='pilot',month=period,current=current,peak=m['peak'],base_yen=m['base'],unit_yen=m['unit'],estimate_yen=estimate,currency='jpy',stale_hubs=stale,sequence=h['sequence'],observed_at=now,billable=False,spending_cap_yen=cap,over_spending_cap=bool(cap) and estimate>cap,overage_sites=max(0,current-included_sites()))
+        return dict(mode='pilot',month=period,current=current,peak=m['peak'],currency='usd',base_usd_cents=m['base'],unit_usd_cents=m['unit'],estimate_usd_cents=estimate_cents,billable_sites=billable_sites,included_sites=included,fx_rate_usd_jpy=usd_jpy_rate(),base_yen=base_yen,unit_yen=unit_yen,estimate_yen=estimate_yen,stale_hubs=stale,sequence=h['sequence'],observed_at=now,billable=False,spending_cap_yen=cap,over_spending_cap=bool(cap) and estimate_yen>cap,overage_sites=max(0,current-included))
     def status(self,token,now=None):
         now=now or utc()
         with self.db() as c:
@@ -475,7 +491,7 @@ class Store:
             unsynced=c.execute("SELECT COUNT(*) FROM hubs WHERE account=? AND revoked='' AND (updated='' OR updated<?)",(account,end)).fetchone()[0]
             grace_hours=(datetime.fromisoformat(now)-datetime.fromisoformat(end)).total_seconds()/3600
             if unsynced and grace_hours<72 and not force:raise Invalid(f'{unsynced} hub(s) have not reported since this period ended at {end}; wait until 72h after that, or pass force=True to accept the risk')
-            r=dict(row);r.update(mode='pilot',currency='jpy',amount_yen=r['base']+r['peak']*r['unit'],billable=False,unsynced_hubs=unsynced)
+            r=dict(row);_bill,_cents=billing_amounts(r['base'],r['unit'],r['peak'],included_sites());r.update(mode='pilot',currency='usd',base_usd_cents=r['base'],unit_usd_cents=r['unit'],estimate_usd_cents=_cents,billable_sites=_bill,base_yen=cents_to_yen(r['base']),unit_yen=cents_to_yen(r['unit']),estimate_yen=cents_to_yen(r['base'])+cents_to_yen(r['unit'])*r['peak'],amount_yen=cents_to_yen(_cents),billable=False,unsynced_hubs=unsynced)
             return r
 
 def _base_subscription_item_id(items):
@@ -511,8 +527,8 @@ def handle_stripe_event(store,event):
         if etype=='checkout.session.completed':
             account=meta.get('account');hub=meta.get('hub')
             if not account or not hub:return {'action':'skipped','reason':'missing account/hub metadata'}
-            base=int(meta['base']) if 'base' in meta else 10000
-            unit=int(meta['unit']) if 'unit' in meta else 100
+            base=int(meta['base']) if 'base' in meta else price_base_usd_cents()
+            unit=int(meta['unit']) if 'unit' in meta else price_unit_usd_cents()
             token=store.provision(account,hub,base,unit)
             # A management token doubles as this account's proof-of-identity for the manage
             # link, without building a login system: whoever holds the (random, unguessable)
@@ -611,6 +627,73 @@ def included_sites():
     except (TypeError,ValueError):raise ValueError('STRIPE_INCLUDED_SITES must be an integer')
     if not 0<=value<=100000:return (_ for _ in ()).throw(ValueError('STRIPE_INCLUDED_SITES is out of range'))
     return value
+
+def price_base_usd_cents():
+    """Authoritative base price, in USD cents (the $29.00 plan -> 2900).
+
+    USD cents -- not yen -- is the source of truth: it is exactly the integer Stripe
+    stores in a price's unit_amount, so a charge can be compared with an invoice without
+    ever going through an exchange rate. Yen exists only for display (see cents_to_yen).
+    """
+    raw=os.environ.get('PRICE_BASE_USD_CENTS','2900')
+    try:value=int(raw)
+    except (TypeError,ValueError):raise ValueError('PRICE_BASE_USD_CENTS must be an integer')
+    if value<0:raise ValueError('PRICE_BASE_USD_CENTS must not be negative')
+    return value
+
+def price_unit_usd_cents():
+    """Authoritative per-extra-site price, in USD cents ($3.00 -> 300)."""
+    raw=os.environ.get('PRICE_UNIT_USD_CENTS','300')
+    try:value=int(raw)
+    except (TypeError,ValueError):raise ValueError('PRICE_UNIT_USD_CENTS must be an integer')
+    if value<0:raise ValueError('PRICE_UNIT_USD_CENTS must not be negative')
+    return value
+
+def usd_jpy_rate():
+    """Yen per USD, for display only -- never used to compute or reconcile a charge.
+
+    The default 157.83 is the rate implied by Stripe's own dashboard, which shows this
+    plan's MRR as 4,577 yen for $29.00. Pin it with USD_JPY_RATE when a fixed display
+    rate matters more than following Stripe.
+    """
+    raw=os.environ.get('USD_JPY_RATE','157.83')
+    try:value=float(raw)
+    except (TypeError,ValueError):raise ValueError('USD_JPY_RATE must be a number')
+    if value<=0:raise ValueError('USD_JPY_RATE must be positive')
+    return value
+
+def cents_to_yen(cents):
+    """Display conversion. Rounded once, to the whole yen: JPY has no minor unit."""
+    return int(round(cents*usd_jpy_rate()/100.0))
+
+def billing_amounts(base_cents,unit_cents,peak,included):
+    """The one place a charge is computed, in USD cents.
+
+    Sites inside the plan's included allowance are already covered by the base price, so
+    only the excess is charged per site -- the same shape as the separate per-unit Stripe
+    price item. Returns (billable_sites, estimate_cents).
+    """
+    billable=max(0,peak-included)
+    return billable,base_cents+unit_cents*billable
+
+def migrate_pricing_to_usd_cents(c):
+    """One-time re-basing of the pricing columns from yen to USD cents.
+
+    accounts.base/unit used to hold yen (10000/100). They now hold USD cents (2900/300),
+    so a charge is compared with Stripe's own unit_amount and a month's snapshot keeps
+    the price that applied when it was observed. Only rows still carrying the old yen
+    defaults are re-based; any other value is left alone and reported, so a hand-set
+    price is never silently rewritten. schema_flags makes it run exactly once.
+    """
+    c.execute('CREATE TABLE IF NOT EXISTS schema_flags(name TEXT PRIMARY KEY, done TEXT NOT NULL)')
+    if c.execute("SELECT 1 FROM schema_flags WHERE name='pricing_usd_cents'").fetchone():return
+    base,unit=price_base_usd_cents(),price_unit_usd_cents()
+    c.execute('UPDATE accounts SET base=?,unit=? WHERE base=10000 AND unit=100',(base,unit))
+    c.execute('UPDATE months SET base=?,unit=? WHERE base=10000 AND unit=100',(base,unit))
+    left=c.execute('SELECT COUNT(*) FROM accounts WHERE base<>? OR unit<>?',(base,unit)).fetchone()[0]
+    c.execute("INSERT INTO schema_flags(name,done) VALUES('pricing_usd_cents',?)",(utc(),))
+    if left:print('[warn] %d account(s) still carry a non-USD price; review before billing'%left)
+
 
 def with_billing_contract(usage):
     """Return the public billing state without exposing Stripe identifiers or secrets."""
@@ -868,7 +951,7 @@ def handler(store):
                     if not 0<size<=4000:raise Invalid('payload size')
                     body=json.loads(self.rfile.read(size))
                     if not isinstance(body,dict):raise Invalid('expected an object')
-                    r={'hub_token':store.provision(body.get('account'),body.get('hub'),int(body.get('base',10000)),int(body.get('unit',100)),(int(body['anchor_day']) if 'anchor_day' in body else None)),'mode':'pilot'}
+                    r={'hub_token':store.provision(body.get('account'),body.get('hub'),int(body.get('base',price_base_usd_cents())),int(body.get('unit',price_unit_usd_cents())),(int(body['anchor_day']) if 'anchor_day' in body else None)),'mode':'pilot'}
                 elif self.command=='POST' and self.path=='/v1/admin/revoke':
                     # Same admin gate as provision; the mirror-image operation for ending a hub's access.
                     admin=os.environ.get('ADMIN_TOKEN','')
@@ -921,7 +1004,7 @@ def handler(store):
                     # account/hub are never taken from the request: random IDs prevent
                     # guessing or colliding with an existing customer.
                     account='acct-'+secrets.token_hex(8);hub='hub-'+secrets.token_hex(8)
-                    base=int(os.environ.get('SIGNUP_BASE','10000'));unit=int(os.environ.get('SIGNUP_UNIT','100'))
+                    base=int(os.environ.get('SIGNUP_BASE',str(price_base_usd_cents())));unit=int(os.environ.get('SIGNUP_UNIT',str(price_unit_usd_cents())))
                     session=create_checkout_session(account,hub,price_id,success_url,cancel_url,key,customer_email=email,base=base,unit=unit,allow_live=stripe_live_enabled())
                     r={'url':session['url']}
                 else:return self.reply(404,{'error':'not_found'})
@@ -981,7 +1064,7 @@ def reconcile_loop(store,to_addr,day=5,interval_hours=6,from_stripe=False,sleep=
                 body+='対象月: %s\n'%(month or '観測なし')
                 body+=note+'\n'
                 body+='\n'.join('・%s 観測peak=%s 請求予定=%s円 記録=%s(%s) 判定=%s'%(
-                        r['account'],r['peak'],r['expected_yen'],r['recorded_yen'],r['recorded_status'],r['state']) for r in rows)
+                        r['account'],r['peak'],r['expected_usd_cents'],r['recorded_usd_cents'],r['recorded_status'],r['state']) for r in rows)
                 body+='\n\n要確認: %d件\n'%len(bad)
                 store.record_reconciliation(now,'monthly',bool(from_stripe),len(rows),recorded,
                                             json.dumps(rows,ensure_ascii=False),now=now)
@@ -995,7 +1078,7 @@ if __name__=='__main__':
     # platform's own TLS-terminating edge proxy, so that must be opted into.
     s.add_argument('--host',default=os.environ.get('AAIHB_HOST','127.0.0.1'))
     s.add_argument('--port',type=int,default=int(os.environ.get('PORT',os.environ.get('AAIHB_PORT','8787'))))
-    s=sub.add_parser('provision');s.add_argument('account');s.add_argument('hub');s.add_argument('--base',type=int,default=10000);s.add_argument('--unit',type=int,default=100);s.add_argument('--anchor-day',type=int,default=None,help='billing day of month (1-28); defaults to the day this account is first provisioned')
+    s=sub.add_parser('provision');s.add_argument('account');s.add_argument('hub');s.add_argument('--base',type=int,default=None);s.add_argument('--unit',type=int,default=None);s.add_argument('--anchor-day',type=int,default=None,help='billing day of month (1-28); defaults to the day this account is first provisioned')
     s=sub.add_parser('export');s.add_argument('account');s.add_argument('period',help='billing period start date (YYYY-MM-DD), as shown in observation results');s.add_argument('--force',action='store_true',help='export even if hubs have not reported since the period ended and the 72h grace window has not passed')
     s=sub.add_parser('revoke');s.add_argument('hub',help='hub id to permanently deny further sync/status requests from; its already-recorded peaks are unaffected')
     s=sub.add_parser('suspend');s.add_argument('account',help='freeze every hub under this account (e.g. non-payment); site counts are kept as-is, only new sync/status requests are denied')
@@ -1052,7 +1135,7 @@ if __name__=='__main__':
                 bad=[r for r in rows if r['state'] in ('missing_payment','amount_mismatch','unpaid')]
                 body='[AutoRepair中央] 月次突合レポート (手動実行)\n\n対象月: %s\n\n'%month
                 body+='\n'.join('・%s 観測peak=%s 請求予定=%s円 記録=%s(%s) 判定=%s'%(
-                        r['account'],r['peak'],r['expected_yen'],r['recorded_yen'],r['recorded_status'],r['state']) for r in rows)
+                        r['account'],r['peak'],r['expected_usd_cents'],r['recorded_usd_cents'],r['recorded_status'],r['state']) for r in rows)
                 body+='\n\n要確認: %d件\n'%len(bad)
                 mailer.send(to,'[AutoRepair中央] 月次突合レポート (手動実行)',body)
                 print(json.dumps({'notified_to':to,'rows':len(rows),'needs_review':len(bad)},ensure_ascii=False))
