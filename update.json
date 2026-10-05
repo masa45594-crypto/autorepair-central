@@ -1,0 +1,14 @@
+{
+  "version": "0.20.13",
+  "download_url": "https://raw.githubusercontent.com/masa45594-crypto/autorepair-central/main/autorepair-ai-hosting-beta-0.20.13.zip",
+  "homepage": "https://ti0321.com/upload/",
+  "requires": "6.2",
+  "tested": "6.8",
+  "requires_php": "7.4",
+  "last_updated": "2026-10-05 12:00:00",
+  "sections": {
+    "description": "Independent diagnostics, recovery and isolated restore rehearsal for WordPress, with backup status verified separately and usage metered against a central service.",
+    "installation": "Upload the zip through Plugins → Add New → Upload Plugin, or extract it into wp-content/plugins/, then activate AutoRepair AI Hosting Beta.",
+    "changelog": "<h4>0.20.13</h4><ul><li>Self-hosted update feed (pre_set_site_transient_update_plugins / plugins_api).</li><li>Translation support with a .pot template and an English catalogue.</li><li>uninstall.php that removes this plugin's options, transients, scheduled events and its own table.</li><li>readme.txt in the WordPress format.</li></ul>"
+  }
+}
