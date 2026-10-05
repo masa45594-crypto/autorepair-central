@@ -74,6 +74,49 @@ def _resolve_invoice_period(store,obj,meta):
     if not month:return account,None,'no month (metadata missing and no usable period_start)'
     return account,month,None
 
+def _stripe_get(path,params,key,timeout=20):
+    """Minimal read-only Stripe GET. Lives here rather than in stripe_draft so the reconciler
+    needs no second file deployed; it never writes anything to Stripe."""
+    import urllib.parse,urllib.request
+    req=urllib.request.Request('https://api.stripe.com/v1/'+path+'?'+urllib.parse.urlencode(params),
+        headers={'Authorization':'Bearer '+key},method='GET')
+    with urllib.request.urlopen(req,timeout=timeout) as r:return json.load(r)
+
+def backfill_account(store,account,key,apply=False,transport=None,limit=100,now=None):
+    """Compare one account's paid Stripe invoices with our own payments table.
+
+    Writes only when apply=True, and writes through record_payment() -- the same path the
+    invoice.paid webhook uses -- so a webhook arriving later cannot double-count the month.
+    The default is a dry run: the shell prints what it would do and changes nothing.
+    """
+    with store.db() as c:
+        row=c.execute('SELECT stripe_customer_id,anchor_day FROM accounts WHERE id=?',(account,)).fetchone()
+    if not row:raise Invalid('unknown account')
+    customer=row['stripe_customer_id']
+    if not customer:
+        return {'account':account,'customer':None,'skipped':True,'reason':'no stripe customer linked','actions':[]}
+    transport=transport or _stripe_get
+    listing=transport('invoices',{'customer':customer,'status':'paid','limit':limit},key)
+    actions=[]
+    for inv in (listing.get('data') or []):
+        if inv.get('status')!='paid':continue
+        amount=inv.get('amount_paid');period=inv.get('period_start')
+        if not isinstance(amount,int) or amount<=0:
+            actions.append({'invoice':inv.get('id'),'action':'skip','reason':'nonpositive amount'});continue
+        if not isinstance(period,(int,float)) or period<=0:
+            actions.append({'invoice':inv.get('id'),'action':'skip','reason':'no period_start'});continue
+        # Same rule the invoice.paid webhook uses: the account's own anchor day, applied to
+        # the invoice's period_start, is what names the billing month.
+        month=period_start(datetime.fromtimestamp(period,timezone.utc).isoformat(),row['anchor_day'])
+        existing=store.payment_status(account,month)
+        if existing and existing['status']=='paid' and existing['amount']==amount:
+            actions.append({'invoice':inv.get('id'),'month':month,'amount':amount,'action':'already_recorded'});continue
+        if not apply:
+            actions.append({'invoice':inv.get('id'),'month':month,'amount':amount,'action':'would_record','previous':existing});continue
+        store.record_payment(account,month,'paid',amount,now=now)
+        actions.append({'invoice':inv.get('id'),'month':month,'amount':amount,'action':'recorded','previous':existing})
+    return {'account':account,'customer':customer,'skipped':False,'actions':actions}
+
 class Store:
     def __init__(self, path):
         self.path=path
@@ -87,6 +130,7 @@ class Store:
             CREATE TABLE IF NOT EXISTS stripe_events(id TEXT PRIMARY KEY, type TEXT NOT NULL, received TEXT NOT NULL, payload TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS payments(account TEXT NOT NULL REFERENCES accounts(id), month TEXT NOT NULL, status TEXT NOT NULL, amount INTEGER, recorded_at TEXT NOT NULL, PRIMARY KEY(account,month));
             CREATE TABLE IF NOT EXISTS management_tokens(account TEXT PRIMARY KEY REFERENCES accounts(id), token_hash TEXT UNIQUE NOT NULL, stripe_customer TEXT NOT NULL, created TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS reconciliation_runs(id INTEGER PRIMARY KEY, started TEXT NOT NULL, finished TEXT NOT NULL, mode TEXT NOT NULL, apply INTEGER NOT NULL, accounts INTEGER NOT NULL, recorded INTEGER NOT NULL, detail TEXT NOT NULL);
             ''')
             # Migrations for databases created before these columns existed.
             try: c.execute('ALTER TABLE accounts ADD COLUMN anchor_day INTEGER NOT NULL DEFAULT 1')
@@ -170,6 +214,41 @@ class Store:
         with self.db() as c:
             row=c.execute('SELECT * FROM payments WHERE account=? AND month=?',(account,month)).fetchone()
             return dict(row) if row else None
+    def account_ids(self):
+        with self.db() as c:return [r['id'] for r in c.execute('SELECT id FROM accounts ORDER BY id').fetchall()]
+    def latest_month(self):
+        with self.db() as c:
+            r=c.execute('SELECT month FROM months ORDER BY month DESC LIMIT 1').fetchone()
+        return r['month'] if r else None
+    def reconcile_month(self,month):
+        """Read-only: for every account, put the peak we observed against the payment we
+        recorded for one billing month, and say whether the two agree."""
+        with self.db() as c:
+            rows=c.execute("SELECT a.id AS account,m.peak,m.base,m.unit,p.status,p.amount "
+                           "FROM accounts a "
+                           "LEFT JOIN months m ON m.account=a.id AND m.month=? "
+                           "LEFT JOIN payments p ON p.account=a.id AND p.month=? "
+                           "ORDER BY a.id",(month,month)).fetchall()
+        out=[]
+        for r in rows:
+            expected=None if r['peak'] is None else r['base']+r['unit']*r['peak']
+            if r['peak'] is None and r['amount'] is None:state='no_observation'
+            elif r['amount'] is None:state='missing_payment'
+            elif r['status']!='paid':state='unpaid'
+            elif expected is not None and r['amount']!=expected:state='amount_mismatch'
+            else:state='ok'
+            out.append({'account':r['account'],'peak':r['peak'],'expected_yen':expected,
+                        'recorded_status':r['status'],'recorded_yen':r['amount'],'state':state})
+        return out
+    def record_reconciliation(self,started,mode,apply,accounts,recorded,detail,now=None):
+        """Audit trail: one row per reconcile run, so a monthly gap stays visible afterwards."""
+        with self.db() as c:
+            c.execute('INSERT INTO reconciliation_runs(started,finished,mode,apply,accounts,recorded,detail) VALUES(?,?,?,?,?,?,?)',
+                      (started,now or utc(),mode,1 if apply else 0,accounts,recorded,detail))
+    def reconciliation_runs(self,limit=20):
+        with self.db() as c:
+            rows=c.execute('SELECT * FROM reconciliation_runs ORDER BY id DESC LIMIT ?',(limit,)).fetchall()
+        return [dict(r) for r in rows]
     def issue_management_token(self,account,stripe_customer,now=None):
         # One live token per account (re-issuing replaces the previous one, so an old link
         # a customer forwarded or lost stops working once a new one is issued).
@@ -883,6 +962,11 @@ if __name__=='__main__':
     s=sub.add_parser('suspend');s.add_argument('account',help='freeze every hub under this account (e.g. non-payment); site counts are kept as-is, only new sync/status requests are denied')
     s=sub.add_parser('unsuspend');s.add_argument('account')
     s=sub.add_parser('alert');s.add_argument('--hours',type=int,default=48,help='flag accounts whose last verified webhook is older than this many hours');s.add_argument('--to',default=os.environ.get('ALERT_TO',''),help='recipient address; defaults to ALERT_TO');s.add_argument('--dry-run',action='store_true',help='report only, send no email')
+    s=sub.add_parser('reconcile',help='compare observed peaks with recorded payments; --from-stripe reads paid invoices and backfills what a missed webhook dropped')
+    s.add_argument('--month',help='billing month to compare (YYYY-MM-DD); defaults to the newest month we have observed')
+    s.add_argument('--from-stripe',action='store_true',help="read each account's paid invoices from Stripe and backfill missing payments")
+    s.add_argument('--apply',action='store_true',help='with --from-stripe, actually record the missing payments (default: report only, nothing is written)')
+    s.add_argument('--account',help='limit the Stripe backfill to one account id')
     s=sub.add_parser('backup');s.add_argument('target',help='path to write a consistent point-in-time copy to; safe to run against a live server')
     s=sub.add_parser('check',help='run PRAGMA integrity_check and exit non-zero if it finds damage')
     a=p.parse_args();os.umask(0o077);store=Store(a.db)
@@ -903,6 +987,25 @@ if __name__=='__main__':
             body+='\n'.join('・%s 最終受信: %s (%s)'%(x['account'],x['last_webhook_at'] or 'なし',x['last_webhook_type'] or '-') for x in stale)+'\n'
             mailer.send(a.to,'[AutoRepair中央] Webhook未受信の警告',body)
             print(json.dumps(dict(payload,sent=True,to=a.to)))
+    elif a.command=='reconcile':
+        started=utc()
+        if a.from_stripe:
+            key=os.environ.get('STRIPE_SECRET_KEY','')
+            if not key:print(json.dumps({'error':'STRIPE_SECRET_KEY not configured'}));sys.exit(2)
+            targets=[a.account] if a.account else store.account_ids()
+            results=[]
+            for acct in targets:
+                try:results.append(backfill_account(store,acct,key,apply=a.apply,now=started))
+                except Exception as exc:results.append({'account':acct,'skipped':True,'reason':'error: '+str(exc),'actions':[]})
+            recorded=sum(1 for r in results for x in (r.get('actions') or []) if x.get('action')=='recorded')
+            store.record_reconciliation(started,'stripe',a.apply,len(targets),recorded,json.dumps(results,ensure_ascii=False))
+            print(json.dumps({'mode':'stripe','apply':a.apply,'accounts':len(targets),'recorded':recorded,'results':results},ensure_ascii=False))
+        else:
+            month=a.month or store.latest_month()
+            if not month:print(json.dumps({'error':'no observed month yet; pass --month YYYY-MM-DD'}));sys.exit(2)
+            rows=store.reconcile_month(month)
+            store.record_reconciliation(started,'local',False,len(rows),0,json.dumps(rows,ensure_ascii=False))
+            print(json.dumps({'mode':'local','month':month,'rows':rows},ensure_ascii=False))
     elif a.command=='backup':store.backup(a.target);print(json.dumps({'backed_up_to':a.target}))
     elif a.command=='check':
         result=store.check();print(json.dumps({'integrity_check':result}))
