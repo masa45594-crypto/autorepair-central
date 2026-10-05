@@ -179,7 +179,7 @@ class Tests(unittest.TestCase):
   self.assertEqual(handle_stripe_event(self.s,cancel),{'action':'suspended','account':'a'})
   with self.assertRaises(Unauthorized):self.s.status(self.a,self.now)
   paid_no_meta={'type':'invoice.paid','data':{'object':{'metadata':{}}}}
-  self.assertEqual(handle_stripe_event(self.s,paid_no_meta),{'action':'skipped','reason':'missing account/month metadata'})
+  self.assertEqual(handle_stripe_event(self.s,paid_no_meta),{'action':'skipped','reason':'no account (metadata missing and customer not linked)','event':'invoice.paid','invoice':None,'customer':None,'metadata_keys':[]})
   # account 'a' is currently suspended with reason 'subscription_canceled' (from just above);
   # an unrelated invoice.paid must NOT silently reactivate it.
   paid={'type':'invoice.paid','data':{'object':{'metadata':{'account':'a','month':'2026-09-01'},'amount_paid':10400}}}
