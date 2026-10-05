@@ -19,6 +19,9 @@ on:
         description: 'Run central-service load characterization (measurement only, not pass/fail)'
         type: boolean
         default: false
+  schedule:
+    # 毎週月曜 03:00 UTC（= 月曜 12:00 JST）
+    - cron: '0 3 * * 1'
 permissions:
   contents: read
 jobs:
@@ -66,11 +69,24 @@ jobs:
           path: reports/
           retention-days: 7
   stripe:
-    if: ${{ inputs.stripe_sandbox }}
+    if: ${{ github.event_name == 'schedule' || inputs.stripe_sandbox }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
+      - name: Check Stripe test key is configured
+        env:
+          STRIPE_TEST_SECRET_KEY: ${{ secrets.STRIPE_TEST_SECRET_KEY }}
+        run: |
+          if [ -z "$STRIPE_TEST_SECRET_KEY" ]; then
+            echo "::error::STRIPE_TEST_SECRET_KEY が未登録です。Settings → Secrets and variables → Actions で登録してください。"
+            exit 1
+          fi
+          case "$STRIPE_TEST_SECRET_KEY" in
+            sk_test_*) echo "テストキーを確認しました。" ;;
+            sk_live_*) echo "::error::本番キー(sk_live_)が設定されています。テストキー(sk_test_)に置き換えてください。"; exit 1 ;;
+            *) echo "::error::キー形式が不正です（sk_test_ で始まる必要があります）。"; exit 1 ;;
+          esac
       - name: Stripe sandbox success and decline
         env:
           STRIPE_TEST_SECRET_KEY: ${{ secrets.STRIPE_TEST_SECRET_KEY }}
@@ -87,7 +103,7 @@ jobs:
           path: reports/
           retention-days: 7
   load:
-    if: ${{ inputs.load_test }}
+    if: ${{ github.event_name == 'schedule' || inputs.load_test }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
