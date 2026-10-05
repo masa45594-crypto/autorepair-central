@@ -11,7 +11,7 @@ class Tests(unittest.TestCase):
  def tearDown(self):self.tmp.cleanup()
  def push(self,t,seq,ids,now=None):return self.s.snapshot(t,{'sequence':seq,'sites':ids},now or self.now)
  def test_aggregate(self):
-  self.push(self.a,1,self.ids[:2]);r=self.push(self.b,1,self.ids[1:3]);self.assertEqual(r['current'],3);self.assertEqual(r['estimate_yen'],10300)
+  self.push(self.a,1,self.ids[:2]);r=self.push(self.b,1,self.ids[1:3]);self.assertEqual(r['current'],3);self.assertEqual(r['estimate_yen'],5996)
  def test_tenant_isolation(self):
   self.push(self.a,1,self.ids);self.assertEqual(self.s.status(self.other,self.now)['current'],0)
  def test_retry_idempotent(self):
@@ -71,7 +71,7 @@ class Tests(unittest.TestCase):
   # Inherits the account's existing pricing rather than any caller-supplied value.
   with self.s.db() as c:
    row=c.execute('SELECT base,unit FROM accounts WHERE id=?',('a',)).fetchone()
-   self.assertEqual((row['base'],row['unit']),(10000,100))
+   self.assertEqual((row['base'],row['unit']),(2900,300))
   self.assertEqual(self.s.status(token,self.now)['current'],0)
   self.s.suspend('a',self.now)
   with self.assertRaises(Invalid):self.s.issue_additional_hub('a')
@@ -93,7 +93,7 @@ class Tests(unittest.TestCase):
  def test_pricing_snapshot(self):
   self.push(self.a,1,self.ids)
   with self.s.db() as c:c.execute("UPDATE accounts SET unit=500 WHERE id='a'")
-  self.assertEqual(self.s.status(self.a,self.now)['unit_yen'],100)
+  self.assertEqual(self.s.status(self.a,self.now)['unit_yen'],473)
  def test_stale_not_deleted(self):
   self.push(self.a,1,self.ids);r=self.s.status(self.a,'2026-09-12T00:00:00+00:00');self.assertEqual(r['current'],4);self.assertGreater(r['stale_hubs'],0);self.assertFalse(r['billable'])
  def test_spending_cap(self):
@@ -101,13 +101,13 @@ class Tests(unittest.TestCase):
   with self.assertRaises(Invalid):self.s.set_spending_cap('a',-1)
   r=self.push(self.a,1,self.ids);self.assertEqual(r['spending_cap_yen'],0);self.assertFalse(r['over_spending_cap'])
   self.s.set_spending_cap('a',5000)
-  r=self.s.status(self.a,self.now);self.assertEqual(r['estimate_yen'],10400);self.assertTrue(r['over_spending_cap'])
+  r=self.s.status(self.a,self.now);self.assertEqual(r['estimate_yen'],6469);self.assertTrue(r['over_spending_cap'])
   # Over the cap does not block anything: sync keeps working.
   r=self.push(self.a,2,self.ids);self.assertEqual(r['current'],4)
   self.s.set_spending_cap('a',20000)
   self.assertFalse(self.s.status(self.a,self.now)['over_spending_cap'])
  def test_stripe_preview(self):
-  self.push(self.a,1,self.ids);r=plan(self.s.export('a','2026-09-01',force=True),'cus_test');self.assertEqual(r['amount'],10400);self.assertEqual(r['auto_advance'],'false')
+  self.push(self.a,1,self.ids);r=plan(self.s.export('a','2026-09-01',force=True),'cus_test');self.assertEqual((r['currency'],r['amount']),('usd',2900));self.assertEqual(r['auto_advance'],'false')
  def test_stripe_live_rejected(self):
   self.push(self.a,1,[])
   with self.assertRaises(ValueError):send(self.s.export('a','2026-09-01',force=True),'cus_test',self.tmp.name,'sk_live_fake')
@@ -115,13 +115,13 @@ class Tests(unittest.TestCase):
   self.push(self.a,1,self.ids);u=self.s.export('a','2026-09-01',force=True);calls=[]
   def transport(path,data,key,identity):calls.append((path,data,identity));return {'livemode':False,'status':'draft','id':'in_test' if path=='invoices' else 'ii_test'}
   send(u,'cus_test',self.tmp.name,'sk_test_fake',transport);send(u,'cus_test',self.tmp.name,'sk_test_fake',transport);self.assertEqual(len(calls),2);self.assertEqual(calls[1][1]['invoice'],'in_test')
-  u['peak']=3;u['amount_yen']=10300
+  u['peak']=3;u['included_sites']=0;u['billable_sites']=3;u['estimate_usd_cents']=3800
   with self.assertRaises(ValueError):send(u,'cus_test',self.tmp.name,'sk_test_fake',transport)
  def test_stripe_correction(self):
   self.push(self.a,1,self.ids);u=self.s.export('a','2026-09-01',force=True)
   def original(path,data,key,identity):return {'livemode':False,'status':'draft','id':'in_orig' if path=='invoices' else 'ii_orig'}
   send(u,'cus_test',self.tmp.name,'sk_test_fake',original)
-  corrected=dict(u,peak=3,amount_yen=10300)
+  corrected=dict(u,peak=3,included_sites=0,billable_sites=3,estimate_usd_cents=3800)
   with self.assertRaises(ValueError):send(corrected,'cus_test',self.tmp.name,'sk_test_fake',original)
   with self.assertRaises(ValueError):correct(u,'cus_test',self.tmp.name,'   ')
   archived=correct(u,'cus_test',self.tmp.name,'大阪拠点の重複を除外')
@@ -136,7 +136,7 @@ class Tests(unittest.TestCase):
   send(u,'cus_test',self.tmp.name,'sk_test_fake',original)
   with self.assertRaises(ValueError):record_refund(u,'cus_test',self.tmp.name,'   ')
   refunded=record_refund(u,'cus_test',self.tmp.name,'計算誤りのため全額返金')
-  self.assertTrue(refunded['refunded']);self.assertEqual(refunded['refund_amount'],10400);self.assertEqual(refunded['refund_reason'],'計算誤りのため全額返金')
+  self.assertTrue(refunded['refunded']);self.assertEqual(refunded['refund_amount'],2900);self.assertEqual(refunded['refund_reason'],'計算誤りのため全額返金')
   self.assertEqual(refunded['invoice'],'in_orig')
   with self.assertRaises(ValueError):record_refund(u,'cus_test',self.tmp.name,'二重に返金しようとした場合')
   # send() after a refund is a no-op replay (already 'complete'); it does not re-create anything.
@@ -146,10 +146,10 @@ class Tests(unittest.TestCase):
   def transport(path,data,key,identity):return {'livemode':False,'status':'draft','id':'in_p' if path=='invoices' else 'ii_p'}
   send(u,'cus_test',self.tmp.name,'sk_test_fake',transport)
   with self.assertRaises(ValueError):record_refund(u,'cus_test',self.tmp.name,'金額不正','not-an-int')
-  with self.assertRaises(ValueError):record_refund(u,'cus_test',self.tmp.name,'上限超過',10401)
+  with self.assertRaises(ValueError):record_refund(u,'cus_test',self.tmp.name,'上限超過',2901)
   with self.assertRaises(ValueError):record_refund(u,'cus_test',self.tmp.name,'ゼロ以下',0)
   refunded=record_refund(u,'cus_test',self.tmp.name,'大阪拠点分のみ過大請求',300)
-  self.assertEqual((refunded['refund_amount'],refunded['refund_full_amount']),(300,10400))
+  self.assertEqual((refunded['refund_amount'],refunded['refund_full_amount']),(300,2900))
  def test_stripe_finalize_and_deliver(self):
   self.push(self.a,1,self.ids);u=self.s.export('a','2026-09-01',force=True)
   def transport(path,data,key,identity):
