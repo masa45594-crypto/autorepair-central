@@ -491,7 +491,7 @@ class Store:
             unsynced=c.execute("SELECT COUNT(*) FROM hubs WHERE account=? AND revoked='' AND (updated='' OR updated<?)",(account,end)).fetchone()[0]
             grace_hours=(datetime.fromisoformat(now)-datetime.fromisoformat(end)).total_seconds()/3600
             if unsynced and grace_hours<72 and not force:raise Invalid(f'{unsynced} hub(s) have not reported since this period ended at {end}; wait until 72h after that, or pass force=True to accept the risk')
-            r=dict(row);_bill,_cents=billing_amounts(r['base'],r['unit'],r['peak'],included_sites());r.update(mode='pilot',currency='usd',base_usd_cents=r['base'],unit_usd_cents=r['unit'],estimate_usd_cents=_cents,billable_sites=_bill,base_yen=cents_to_yen(r['base']),unit_yen=cents_to_yen(r['unit']),estimate_yen=cents_to_yen(r['base'])+cents_to_yen(r['unit'])*r['peak'],amount_yen=cents_to_yen(_cents),billable=False,unsynced_hubs=unsynced)
+            r=dict(row);_bill,_cents=billing_amounts(r['base'],r['unit'],r['peak'],included_sites());r.update(mode='pilot',currency='usd',base_usd_cents=r['base'],unit_usd_cents=r['unit'],estimate_usd_cents=_cents,billable_sites=_bill,included_sites=included_sites(),base_yen=cents_to_yen(r['base']),unit_yen=cents_to_yen(r['unit']),estimate_yen=cents_to_yen(r['base'])+cents_to_yen(r['unit'])*r['peak'],amount_yen=cents_to_yen(_cents),billable=False,unsynced_hubs=unsynced)
             return r
 
 def _base_subscription_item_id(items):
@@ -665,6 +665,19 @@ def usd_jpy_rate():
 def cents_to_yen(cents):
     """Display conversion. Rounded once, to the whole yen: JPY has no minor unit."""
     return int(round(cents*usd_jpy_rate()/100.0))
+
+def usd_text(cents):
+    """Human-readable USD for a cent amount ('$29.00'), or an em dash when there is none.
+
+    Reports print money through this so a USD cent value can never be labelled as yen.
+    """
+    if cents is None:return '—'
+    return '$%.2f'%(cents/100.0)
+
+def yen_text(cents):
+    """The same amount with its yen reference appended, for a report line."""
+    if cents is None:return '—'
+    return '%s（約%s円）'%(usd_text(cents),format(cents_to_yen(cents),','))
 
 def billing_amounts(base_cents,unit_cents,peak,included):
     """The one place a charge is computed, in USD cents.
@@ -1063,8 +1076,8 @@ def reconcile_loop(store,to_addr,day=5,interval_hours=6,from_stripe=False,sleep=
                 body='[AutoRepair中央] 月次突合レポート (%s)\n\n'%stamp
                 body+='対象月: %s\n'%(month or '観測なし')
                 body+=note+'\n'
-                body+='\n'.join('・%s 観測peak=%s 請求予定=%s円 記録=%s(%s) 判定=%s'%(
-                        r['account'],r['peak'],r['expected_usd_cents'],r['recorded_usd_cents'],r['recorded_status'],r['state']) for r in rows)
+                body+='\n'.join('・%s 観測peak=%s 請求予定=%s 記録=%s(%s) 判定=%s'%(
+                        r['account'],r['peak'],yen_text(r['expected_usd_cents']),yen_text(r['recorded_usd_cents']),r['recorded_status'],r['state']) for r in rows)
                 body+='\n\n要確認: %d件\n'%len(bad)
                 store.record_reconciliation(now,'monthly',bool(from_stripe),len(rows),recorded,
                                             json.dumps(rows,ensure_ascii=False),now=now)
@@ -1134,8 +1147,8 @@ if __name__=='__main__':
                 if not to:print(json.dumps({'error':'RECONCILE_TO/ALERT_TO not configured'}));sys.exit(2)
                 bad=[r for r in rows if r['state'] in ('missing_payment','amount_mismatch','unpaid')]
                 body='[AutoRepair中央] 月次突合レポート (手動実行)\n\n対象月: %s\n\n'%month
-                body+='\n'.join('・%s 観測peak=%s 請求予定=%s円 記録=%s(%s) 判定=%s'%(
-                        r['account'],r['peak'],r['expected_usd_cents'],r['recorded_usd_cents'],r['recorded_status'],r['state']) for r in rows)
+                body+='\n'.join('・%s 観測peak=%s 請求予定=%s 記録=%s(%s) 判定=%s'%(
+                        r['account'],r['peak'],yen_text(r['expected_usd_cents']),yen_text(r['recorded_usd_cents']),r['recorded_status'],r['state']) for r in rows)
                 body+='\n\n要確認: %d件\n'%len(bad)
                 mailer.send(to,'[AutoRepair中央] 月次突合レポート (手動実行)',body)
                 print(json.dumps({'notified_to':to,'rows':len(rows),'needs_review':len(bad)},ensure_ascii=False))
