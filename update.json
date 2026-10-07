@@ -1,7 +1,7 @@
 {
-  "version": "0.20.25",
-  "download_url": "https://raw.githubusercontent.com/masa45594-crypto/autorepair-central/main/autorepair-ai-hosting-beta-0.20.25.zip",
-  "sha256": "15f50333b5e0411566e5bd7fc2e1a27e021ecfb993f6847945f7a6ebe2938f00",
+  "version": "0.20.26",
+  "download_url": "https://raw.githubusercontent.com/masa45594-crypto/autorepair-central/main/autorepair-ai-hosting-beta-0.20.26.zip",
+  "sha256": "42db351913d672b0d8275a0161c22bdaf978f504e3156fbbddb5d886e9ab277a",
   "requires": "6.2",
   "tested": "6.8",
   "requires_php": "7.4",
@@ -9,6 +9,6 @@
   "last_updated": "2026-10-07 00:00:00",
   "sections": {
     "description": "AutoRepair AI Hosting Beta. Pre-update protection, full-site backup and restore, isolated restore verification, proof reports, hub management, usage and billing display, and a built-in diagnostic panel. USD-based billing display.",
-    "changelog": "<h4>0.20.25</h4><ul><li>verification.php (product verification screen): 43 hard-coded Japanese strings were internationalized.</li></ul><h4>0.20.20</h4><ul><li>vault-admin.php (Backup and restore) translated to English.</li></ul><h4>0.20.19</h4><ul><li>value.php (Value and support) translated to English.</li><li>Connection settings are mirrored in encrypted form and restored automatically when they are wiped.</li><li>A 409 sequence_conflict is now realigned and retried automatically.</li></ul><h4>0.20.18</h4><ul><li>control-center.php translated to English.</li></ul>"
+    "changelog": "<h4>0.20.26</h4><ul><li>English pass 2: every remaining screen internationalized - repair, recovery, vault admin/io/db/test/guard/full/command, business checks, reports, workspace, dashboard, notifications, onboarding, partner API, diagnostics, compatibility, backup jobs, billing, verification.</li></ul><h4>0.20.20</h4><ul><li>vault-admin.php (Backup and restore) translated to English.</li></ul><h4>0.20.19</h4><ul><li>value.php (Value and support) translated to English.</li><li>Connection settings are mirrored in encrypted form and restored automatically when they are wiped.</li><li>A 409 sequence_conflict is now realigned and retried automatically.</li></ul><h4>0.20.18</h4><ul><li>control-center.php translated to English.</li></ul>"
   }
 }
