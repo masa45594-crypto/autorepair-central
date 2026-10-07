@@ -1,7 +1,7 @@
 {
-  "version": "0.20.20",
-  "download_url": "https://raw.githubusercontent.com/masa45594-crypto/autorepair-central/main/autorepair-ai-hosting-beta-0.20.20.zip",
-  "sha256": "a08a6ede311aa8052d6d41847e082ab4c82b3a91284d8230fcacc6932d7f2f46",
+  "version": "0.20.21",
+  "download_url": "https://raw.githubusercontent.com/masa45594-crypto/autorepair-central/main/autorepair-ai-hosting-beta-0.20.21.zip",
+  "sha256": "cc124cb5ad6b1f54d0d96bd60bf3911c5812d5ea4b595377bf457304d7012051",
   "requires": "6.2",
   "tested": "6.8",
   "requires_php": "7.4",
@@ -9,6 +9,6 @@
   "last_updated": "2026-10-07 00:00:00",
   "sections": {
     "description": "AutoRepair AI Hosting Beta. Pre-update protection, full-site backup and restore, isolated restore verification, proof reports, hub management, usage and billing display, and a built-in diagnostic panel. USD-based billing display.",
-    "changelog": "<h4>0.20.20</h4><ul><li>vault-admin.php (Backup and restore) translated to English: 139 strings wrapped and added to the English catalogue.</li></ul><h4>0.20.19</h4><ul><li>value.php (Value and support) translated to English: 131 strings added.</li><li>Connection settings are mirrored in encrypted form and restored automatically when they are wiped.</li><li>A 409 sequence_conflict is now realigned and retried automatically instead of stalling the pending queue.</li></ul><h4>0.20.18</h4><ul><li>control-center.php translated to English.</li></ul>"
+    "changelog": "<h4>0.20.21</h4><ul><li>selfserve.php: 3 remaining hard-coded Japanese strings were internationalized (Off / Format / Token).</li><li>Known limitation: the rest of selfserve.php is still Japanese-only; a full English pass is not yet included.</li></ul><h4>0.20.20</h4><ul><li>vault-admin.php (Backup and restore) translated to English.</li></ul><h4>0.20.19</h4><ul><li>value.php (Value and support) translated to English.</li><li>Connection settings are mirrored in encrypted form and restored automatically when they are wiped.</li><li>A 409 sequence_conflict is now realigned and retried automatically.</li></ul><h4>0.20.18</h4><ul><li>control-center.php translated to English.</li></ul>"
   }
 }
