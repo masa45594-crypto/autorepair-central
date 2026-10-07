@@ -1,14 +1,14 @@
 {
-  "version": "0.20.13",
-  "download_url": "https://raw.githubusercontent.com/masa45594-crypto/autorepair-central/main/autorepair-ai-hosting-beta-0.20.13.zip",
+  "version": "0.20.16",
+  "download_url": "https://raw.githubusercontent.com/masa45594-crypto/autorepair-central/main/autorepair-ai-hosting-beta-0.20.16.zip",
   "homepage": "https://ti0321.com/upload/",
   "requires": "6.2",
   "tested": "6.8",
   "requires_php": "7.4",
-  "last_updated": "2026-10-05 12:00:00",
+  "last_updated": "2026-10-05 00:00:00",
   "sections": {
     "description": "Independent diagnostics, recovery and isolated restore rehearsal for WordPress, with backup status verified separately and usage metered against a central service.",
     "installation": "Upload the zip through Plugins → Add New → Upload Plugin, or extract it into wp-content/plugins/, then activate AutoRepair AI Hosting Beta.",
-    "changelog": "<h4>0.20.13</h4><ul><li>Self-hosted update feed (pre_set_site_transient_update_plugins / plugins_api).</li><li>Translation support with a .pot template and an English catalogue.</li><li>uninstall.php that removes this plugin's options, transients, scheduled events and its own table.</li><li>readme.txt in the WordPress format.</li></ul>"
+    "changelog": "<h4>0.20.16</h4><p>English translations for Quick connect, Usage and billing, hub management, troubleshooting, test checkout, and the built-in diagnostic panel. Other administration modules are not fully translated yet. Connection data and non-destructive uninstall behavior are preserved.</p><h4>0.20.15</h4><ul><li>プラグイン削除時に中央サーバーの接続情報と登録サイトまで消えていた不具合を修正（既定では一時データのみ削除）。</li><li>拠点の「失効させる」「新しい拠点トークンを発行」フォームの nonce 修正（0.20.14 の内容を含む）。</li></ul><h4>0.20.13</h4><ul><li>Self-hosted update feed (pre_set_site_transient_update_plugins / plugins_api).</li><li>Translation support with a .pot template and an English catalogue.</li><li>uninstall.php that removes this plugin's options, transients, scheduled events and its own table.</li><li>readme.txt in the WordPress format.</li></ul>"
   }
 }
