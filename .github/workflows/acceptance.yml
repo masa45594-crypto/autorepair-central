@@ -43,7 +43,21 @@ jobs:
           plugin_zip="$(find . -maxdepth 1 -name 'autorepair-ai-hosting-beta-*.zip' -printf '%f\n' | sort -V | tail -n 1)"
           test -n "$plugin_zip"
           unzip -q "$plugin_zip" -d /tmp/aaihb-unit
-          php /tmp/aaihb-unit/autorepair-ai-hosting-beta/tests/contracts.php
+          cat > /tmp/aaihb-wp-stubs.php <<'STUBS'
+          <?php
+          // WordPress gettext functions the plugin calls but tests/contracts.php
+          // does not stub. Prepended so the isolated harness can run.
+          if (!function_exists('__')) { function __($s, $d = null) { return $s; } }
+          if (!function_exists('_e')) { function _e($s, $d = null) { echo $s; } }
+          if (!function_exists('esc_html__')) { function esc_html__($s, $d = null) { return $s; } }
+          if (!function_exists('esc_attr__')) { function esc_attr__($s, $d = null) { return $s; } }
+          if (!function_exists('esc_html_e')) { function esc_html_e($s, $d = null) { echo $s; } }
+          if (!function_exists('esc_attr_e')) { function esc_attr_e($s, $d = null) { echo $s; } }
+          if (!function_exists('_x')) { function _x($s, $c, $d = null) { return $s; } }
+          if (!function_exists('_n')) { function _n($s, $p, $n, $d = null) { return $n == 1 ? $s : $p; } }
+          if (!function_exists('_nx')) { function _nx($s, $p, $n, $c, $d = null) { return $n == 1 ? $s : $p; } }
+          STUBS
+          php -d auto_prepend_file=/tmp/aaihb-wp-stubs.php /tmp/aaihb-unit/autorepair-ai-hosting-beta/tests/contracts.php
   restore:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
