@@ -128,6 +128,7 @@ class Store:
             CREATE TABLE IF NOT EXISTS months(account TEXT NOT NULL, month TEXT NOT NULL, peak INTEGER NOT NULL, base INTEGER NOT NULL, unit INTEGER NOT NULL, PRIMARY KEY(account,month));
             CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY, hub TEXT NOT NULL, sequence INTEGER NOT NULL, digest TEXT NOT NULL, received TEXT NOT NULL, count INTEGER NOT NULL, UNIQUE(hub,sequence));
             CREATE TABLE IF NOT EXISTS stripe_events(id TEXT PRIMARY KEY, type TEXT NOT NULL, received TEXT NOT NULL, payload TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS audit_log(id INTEGER PRIMARY KEY, at TEXT NOT NULL, actor TEXT NOT NULL, action TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '');
             CREATE TABLE IF NOT EXISTS payments(account TEXT NOT NULL REFERENCES accounts(id), month TEXT NOT NULL, status TEXT NOT NULL, amount INTEGER, recorded_at TEXT NOT NULL, PRIMARY KEY(account,month));
             CREATE TABLE IF NOT EXISTS management_tokens(account TEXT PRIMARY KEY REFERENCES accounts(id), token_hash TEXT UNIQUE NOT NULL, stripe_customer TEXT NOT NULL, created TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS reconciliation_runs(id INTEGER PRIMARY KEY, started TEXT NOT NULL, finished TEXT NOT NULL, mode TEXT NOT NULL, apply INTEGER NOT NULL, accounts INTEGER NOT NULL, recorded INTEGER NOT NULL, detail TEXT NOT NULL);
@@ -200,6 +201,42 @@ class Store:
         with self.db() as c:
             cur=c.execute('INSERT OR IGNORE INTO stripe_events(id,type,received,payload) VALUES(?,?,?,?)',(eid,etype,now or utc(),json.dumps(event)))
             return cur.rowcount==1
+    # ---- audit trail (who did what, when) ---------------------------------
+    def audit(self,actor,action,detail=''):
+        """Append one audit row. Never raises: an audit failure must not fail a request."""
+        try:
+            with self.db() as c:
+                c.execute('INSERT INTO audit_log(at,actor,action,detail) VALUES(?,?,?,?)',
+                          (utc(),str(actor)[:32],str(action)[:64],str(detail)[:500]))
+        except Exception:pass
+    def audit_tail(self,limit=50):
+        with self.db() as c:
+            rows=c.execute('SELECT at,actor,action,detail FROM audit_log ORDER BY id DESC LIMIT ?',
+                           (max(1,int(limit)),)).fetchall()
+        return [{'at':r[0],'actor':r[1],'action':r[2],'detail':r[3]} for r in rows]
+    # ---- refunds ----------------------------------------------------------
+    def account_by_customer(self,customer):
+        with self.db() as c:
+            r=c.execute('SELECT id FROM accounts WHERE stripe_customer_id=?',(customer,)).fetchone()
+        return r[0] if r else None
+    def refund_payment(self,account,month,amount,now=None):
+        """Reverse a recorded payment idempotently.
+
+        A refund is money going back, not a payment: it never unsuspends an account and
+        never deletes the row, so the month keeps a 'refunded' record that reconciliation
+        can still see. Re-delivered Stripe events hit the already_refunded branch.
+        """
+        now=now or utc()
+        with self.db() as c:
+            r=c.execute('SELECT status,amount FROM payments WHERE account=? AND month=?',(account,month)).fetchone()
+            if not r:
+                return {'action':'refund_without_payment','account':account,'month':month,'amount':amount}
+            if r[0]=='refunded':
+                return {'action':'already_refunded','account':account,'month':month,'amount':r[1]}
+            c.execute("UPDATE payments SET status='refunded', amount=?, recorded_at=? WHERE account=? AND month=?",
+                      (amount,now,account,month))
+        return {'action':'refunded','account':account,'month':month,'amount':amount}
+
     def record_payment(self,account,month,status,amount,now=None):
         # Recording only: no automatic reaction (e.g. auto-suspend on failure) is wired up.
         # Refund rules and any failure-triggered action are deliberately still manual.
@@ -515,6 +552,7 @@ def handle_stripe_event(store,event):
     Checkout Session creation itself is not implemented yet, so nothing sets this metadata
     yet; this function is the receiving half, ready for when it is."""
     etype=event.get('type');obj=(event.get('data') or {}).get('object') or {}
+    store.audit('stripe',str(etype),str(obj.get('id') or '')[:64])
     meta=obj.get('metadata') or {}
     if etype in ('invoice.paid','invoice.payment_failed'):
         # A subscription invoice normally carries no metadata of its own: Stripe copies the
@@ -587,6 +625,30 @@ def handle_stripe_event(store,event):
             store.suspend(account,reason='subscription_canceled')
             store.record_webhook(account,etype)
             return {'action':'suspended','account':account}
+        if etype=='charge.refunded':
+            # A refund reverses money, not usage: the month's observed peak still stands,
+            # only the recorded payment is marked refunded (idempotently).
+            charge=obj
+            account=meta.get('account') or store.account_by_customer(charge.get('customer'))
+            month=None
+            invoice_id=charge.get('invoice')
+            if invoice_id:
+                key=stripe_secret_key()
+                if key:
+                    try:
+                        inv=stripe_get('invoices/'+invoice_id,key)
+                        sub_meta=(inv.get('subscription_details') or {}).get('metadata') or {}
+                        merged={**sub_meta,**{k:v for k,v in (inv.get('metadata') or {}).items() if v}}
+                        resolved,month,_why=_resolve_invoice_period(store,inv,merged)
+                        account=account or resolved
+                    except Exception:pass
+            if not account or not month:
+                return {'action':'skipped','reason':'refund could not be mapped to a recorded payment',
+                        'event':etype,'charge':charge.get('id')}
+            amount=charge.get('amount_refunded') or charge.get('amount')
+            result=store.refund_payment(account,month,amount)
+            store.record_webhook(account,etype)
+            return result
         if etype in ('invoice.paid','invoice.payment_failed'):
             account,month,why=_resolve_invoice_period(store,obj,meta)
             if not account or not month:return {'action':'skipped','reason':why or 'missing account/month metadata','event':etype,'invoice':obj.get('id'),'customer':obj.get('customer'),'metadata_keys':sorted(meta.keys())}
@@ -785,17 +847,25 @@ def overage_price_info(key):
     _overage_price_cache[price_id]=(time.time(),info)
     return info
 
+_RATE_HITS={};_RATE_LOCK=threading.Lock()
+
+def rate_limited(key,limit=5,window=600):
+    """Sliding-window limiter shared by every endpoint.
+
+    In-memory and per-process: it resets on restart, which is adequate at pilot scale.
+    A multi-instance deployment would need a shared store instead. Every refusal is
+    written to the audit log by the caller.
+    """
+    now=time.time()
+    with _RATE_LOCK:
+        hits=[t for t in _RATE_HITS.get(key,()) if now-t<window]
+        hits.append(now);_RATE_HITS[key]=hits
+        if len(_RATE_HITS)>4096:
+            for k in list(_RATE_HITS)[:1024]:
+                if k!=key:_RATE_HITS.pop(k,None)
+        return len(hits)>limit
+
 def handler(store):
-    # Shared across requests/threads: a simple in-memory rate limit for the public signup
-    # endpoint. Resets on restart and is per-process (fine at pilot scale; a real multi-
-    # instance deployment would need a shared store instead).
-    signup_hits={};signup_lock=threading.Lock()
-    def rate_limited(ip,limit=5,window=600):
-        now=time.time()
-        with signup_lock:
-            hits=[t for t in signup_hits.get(ip,()) if now-t<window]
-            hits.append(now);signup_hits[ip]=hits
-            return len(hits)>limit
     class Handler(BaseHTTPRequestHandler):
         def setup(self):
             super().setup();self.connection.settimeout(10)
@@ -804,6 +874,9 @@ def handler(store):
             body=json.dumps(data,separators=(',',':')).encode();self.send_response(code)
             self.send_header('Content-Type','application/json');self.send_header('Cache-Control','no-store');self.send_header('Content-Length',str(len(body)));self.end_headers();self.wfile.write(body)
         def dispatch(self):
+            if rate_limited('ip:'+self.client_address[0],240,60):
+                store.audit('http','rate_limited',self.path)
+                return self.reply(429,{'error':'rate_limited'})
             try:
                 auth=self.headers.get('Authorization','');token=auth[7:] if auth.startswith('Bearer ') else ''
                 if self.command=='GET' and self.path=='/v1/usage': r=with_billing_contract(store.status(token))
@@ -1007,7 +1080,7 @@ def handler(store):
                     price_id=os.environ.get('STRIPE_PRICE_ID','');success_url=os.environ.get('SIGNUP_SUCCESS_URL','')
                     cancel_url=os.environ.get('SIGNUP_CANCEL_URL','');key=stripe_secret_key()
                     if not (price_id and success_url and cancel_url and key):return self.reply(404,{'error':'not_found'})
-                    if rate_limited(self.client_address[0]):return self.reply(429,{'error':'rate_limited'})
+                    if rate_limited(self.client_address[0]):store.audit('http','rate_limited',self.path);return self.reply(429,{'error':'rate_limited'})
                     size=int(self.headers.get('Content-Length','0'))
                     if not 0<=size<=4000:raise Invalid('payload size')
                     body=json.loads(self.rfile.read(size)) if size else {}
@@ -1022,10 +1095,14 @@ def handler(store):
                     r={'url':session['url']}
                 else:return self.reply(404,{'error':'not_found'})
                 self.reply(200,r)
-            except Unauthorized:self.reply(401,{'error':'unauthorized'})
-            except Conflict:self.reply(409,{'error':'sequence_conflict'})
-            except (Invalid,ValueError,UnicodeError):self.reply(400,{'error':'invalid_request'})
-            except Exception:self.reply(503,{'error':'temporarily_unavailable'})
+            except Unauthorized:
+                store.audit('http','unauthorized',self.path);self.reply(401,{'error':'unauthorized'})
+            except Conflict:
+                store.audit('http','sequence_conflict',self.path);self.reply(409,{'error':'sequence_conflict'})
+            except (Invalid,ValueError,UnicodeError) as exc:
+                store.audit('http','invalid_request',self.path+' '+str(exc)[:80]);self.reply(400,{'error':'invalid_request'})
+            except Exception as exc:
+                store.audit('http','unavailable',self.path+' '+str(exc)[:80]);self.reply(503,{'error':'temporarily_unavailable'})
         def do_GET(self):self.dispatch()
         def do_POST(self):self.dispatch()
     return Handler
