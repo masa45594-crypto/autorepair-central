@@ -1,7 +1,7 @@
 {
-  "version": "0.20.23",
-  "download_url": "https://raw.githubusercontent.com/masa45594-crypto/autorepair-central/main/autorepair-ai-hosting-beta-0.20.23.zip",
-  "sha256": "2cbf100ceece2e3af79df3fc9bf17aea6be938652c26fc988deabfa4e53e28f0",
+  "version": "0.20.24",
+  "download_url": "https://raw.githubusercontent.com/masa45594-crypto/autorepair-central/main/autorepair-ai-hosting-beta-0.20.24.zip",
+  "sha256": "0eab0feaddd55ed8a522548c2711273c5504cc0bcf61f3eb5504466393d8c745",
   "requires": "6.2",
   "tested": "6.8",
   "requires_php": "7.4",
@@ -9,6 +9,6 @@
   "last_updated": "2026-10-07 00:00:00",
   "sections": {
     "description": "AutoRepair AI Hosting Beta. Pre-update protection, full-site backup and restore, isolated restore verification, proof reports, hub management, usage and billing display, and a built-in diagnostic panel. USD-based billing display.",
-    "changelog": "<h4>0.20.23</h4><ul><li>operations.php (team operations screen): 76 hard-coded Japanese strings were internationalized.</li></ul><h4>0.20.20</h4><ul><li>vault-admin.php (Backup and restore) translated to English.</li></ul><h4>0.20.19</h4><ul><li>value.php (Value and support) translated to English.</li><li>Connection settings are mirrored in encrypted form and restored automatically when they are wiped.</li><li>A 409 sequence_conflict is now realigned and retried automatically.</li></ul><h4>0.20.18</h4><ul><li>control-center.php translated to English.</li></ul>"
+    "changelog": "<h4>0.20.24</h4><ul><li>fleet.php (Groups &amp; diagnostic queue, Diagnostic history): 79 hard-coded Japanese strings were internationalized.</li></ul><h4>0.20.20</h4><ul><li>vault-admin.php (Backup and restore) translated to English.</li></ul><h4>0.20.19</h4><ul><li>value.php (Value and support) translated to English.</li><li>Connection settings are mirrored in encrypted form and restored automatically when they are wiped.</li><li>A 409 sequence_conflict is now realigned and retried automatically.</li></ul><h4>0.20.18</h4><ul><li>control-center.php translated to English.</li></ul>"
   }
 }
