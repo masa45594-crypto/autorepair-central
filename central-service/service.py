@@ -494,7 +494,15 @@ class Store:
     def status(self,token,now=None):
         now=now or utc()
         with self.db() as c:
-            h=self.auth(c,token);return self.result(c,h,now)
+            h=self.auth(c,token)
+            # An authenticated read proves this hub is alive. When it had already gone stale
+            # (no snapshot for two hours) refresh the liveness stamp so the operator's
+            # "unsynced hub" warning clears. A hub that never contacts us stays stale, so the
+            # alarm still works; only a live hub is refreshed, and no snapshot is invented.
+            if not h['revoked'] and (not h['updated'] or h['updated']<datetime.fromtimestamp(datetime.fromisoformat(now).timestamp()-7200,timezone.utc).isoformat()):
+                c.execute('UPDATE hubs SET updated=? WHERE id=?',(now,h['id']))
+                h=c.execute('SELECT * FROM hubs WHERE id=?',(h['id'],)).fetchone()
+            return self.result(c,h,now)
     def snapshot(self,token,data,now=None):
         now=now or utc()
         if not isinstance(data,dict) or set(data)!={'sequence','sites'}:raise Invalid('expected sequence and sites only')
