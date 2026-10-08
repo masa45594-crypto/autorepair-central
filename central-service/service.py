@@ -883,6 +883,25 @@ def rate_limited(key,limit=5,window=600):
                 if k!=key:_RATE_HITS.pop(k,None)
         return len(hits)>limit
 
+def client_key(headers,addr):
+    """Identify the real caller behind the platform edge.
+
+    The socket peer is the edge proxy, not the client: a 250-request burst from a
+    single browser arrived as 250 different peer addresses, so every request landed
+    in its own rate-limit bucket and the limiter never fired. Cloudflare fronts this
+    host and overwrites CF-Connecting-IP with the true client address, so prefer it;
+    X-Real-IP and the RIGHT-most X-Forwarded-For entry are fallbacks, then the socket
+    peer. The LEFT-most X-Forwarded-For entry is ignored on purpose: a client can
+    prepend an arbitrary value there.
+    """
+    for h in ('CF-Connecting-IP','X-Real-IP'):
+        v=(headers.get(h) or '').strip()
+        if v:return v
+    parts=[p.strip() for p in (headers.get('X-Forwarded-For') or '').split(',') if p.strip()]
+    if parts:return parts[-1]
+    return addr
+
+
 def handler(store):
     class Handler(BaseHTTPRequestHandler):
         def setup(self):
@@ -892,7 +911,7 @@ def handler(store):
             body=json.dumps(data,separators=(',',':')).encode();self.send_response(code)
             self.send_header('Content-Type','application/json');self.send_header('Cache-Control','no-store');self.send_header('Content-Length',str(len(body)));self.end_headers();self.wfile.write(body)
         def dispatch(self):
-            if rate_limited('ip:'+self.client_address[0],240,60):
+            if rate_limited('ip:'+client_key(self.headers,self.client_address[0]),240,60):
                 store.audit('http','rate_limited',redact_path(self.path))
                 return self.reply(429,{'error':'rate_limited'})
             try:
@@ -1112,7 +1131,7 @@ def handler(store):
                     price_id=os.environ.get('STRIPE_PRICE_ID','');success_url=os.environ.get('SIGNUP_SUCCESS_URL','')
                     cancel_url=os.environ.get('SIGNUP_CANCEL_URL','');key=stripe_secret_key()
                     if not (price_id and success_url and cancel_url and key):return self.reply(404,{'error':'not_found'})
-                    if rate_limited(self.client_address[0]):store.audit('http','rate_limited',redact_path(self.path));return self.reply(429,{'error':'rate_limited'})
+                    if rate_limited(client_key(self.headers,self.client_address[0])):store.audit('http','rate_limited',redact_path(self.path));return self.reply(429,{'error':'rate_limited'})
                     size=int(self.headers.get('Content-Length','0'))
                     if not 0<=size<=4000:raise Invalid('payload size')
                     body=json.loads(self.rfile.read(size)) if size else {}
