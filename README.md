@@ -42,7 +42,16 @@ AutoRepair AI Hosting Beta は、WordPress サイトの**独立した診断・�
 
 ## ライセンス
 
-未設定です。配布・販売の前に確定が必要です。
+このリポジトリが配布するプラグイン本体（`autorepair-ai-hosting-beta-<version>.zip` に含まれる PHP / JavaScript / CSS / Python）は **GNU General Public License v2.0 以降（GPL-2.0-or-later）** の下で配布されます。全文はリポジトリ直下の [`LICENSE`](./LICENSE) を参照してください。
+
+| 対象 | ライセンス |
+|---|---|
+| プラグイン本体（zip 内の全ファイル） | GPL-2.0-or-later |
+| 中央サービス（`central-service/`） | プラグイン本体とは別のライセンス（未確定） |
+| 同梱する第三者コード | ありません（[`THIRD-PARTY-NOTICES.md`](./THIRD-PARTY-NOTICES.md)） |
+
+GPL は販売を禁じていません。ただし販売した場合、購入者には GPL が定める再配布・改変の自由が及びます（GPL-2.0 第1条は、複製物の引き渡しに対して対価を請求できると定めています）。
+
 
 ---
 
@@ -53,3 +62,5 @@ AutoRepair AI Hosting Beta is a WordPress plugin for independent diagnostics, re
 **Canonical distribution:** the latest `autorepair-ai-hosting-beta-<version>.zip` (currently `0.20.30`) plus `update.json`. The plugin source ships only inside the zip; there is no duplicate source folder at the repository root. Older zips are not canonical and may be removed.
 
 **Requirements:** WordPress 6.2+ (tested to 6.8), PHP 7.4+, ZipArchive for backup features, single-site only.
+
+**License:** GPL-2.0-or-later (see [`LICENSE`](./LICENSE)). Third-party code bundled: none.
