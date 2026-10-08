@@ -1,7 +1,7 @@
 {
-  "version": "0.20.27",
-  "download_url": "https://raw.githubusercontent.com/masa45594-crypto/autorepair-central/main/autorepair-ai-hosting-beta-0.20.27.zip",
-  "sha256": "b434a70291b99aab5cd7814549d470973b4d31dccbac2930a89c76269ffa9dc7",
+  "version": "0.20.28",
+  "download_url": "https://raw.githubusercontent.com/masa45594-crypto/autorepair-central/main/autorepair-ai-hosting-beta-0.20.28.zip",
+  "sha256": "dda127d6706fc28f1fda3e29999d02fa7fd1dae6ee74f85b0247e2b6eac63a23",
   "requires": "6.2",
   "tested": "6.8",
   "requires_php": "7.4",
@@ -9,6 +9,6 @@
   "last_updated": "2026-10-08 00:00:00",
   "sections": {
     "description": "AutoRepair AI Hosting Beta. Pre-update protection, full-site backup and restore, isolated restore verification, proof reports, hub management, usage and billing display, and a built-in diagnostic panel. USD-based billing display.",
-    "changelog": "<h4>0.20.27</h4><ul><li>Fix the stale version labels in the app header and the recovery vault hero: both printed a hard-coded build number (0.20.13 / 0.20.20), so every release showed an old number. They now read the plugin version constant.</li><li>Align the package version strings (plugin header, version constant, asset version, readme Stable tag, distribution note) to 0.20.27.</li></ul><h4>0.20.26</h4><ul><li>English pass 2: every remaining screen internationalized - repair, recovery, vault admin/io/db/test/guard/full/command, business checks, reports, workspace, dashboard, notifications, onboarding, partner API, diagnostics, compatibility, backup jobs, billing, verification.</li></ul><h4>0.20.20</h4><ul><li>vault-admin.php (Backup and restore) translated to English.</li></ul><h4>0.20.19</h4><ul><li>value.php (Value and support) translated to English.</li><li>Connection settings are mirrored in encrypted form and restored automatically when they are wiped.</li><li>A 409 sequence_conflict is now realigned and retried automatically.</li></ul><h4>0.20.18</h4><ul><li>control-center.php translated to English.</li></ul>"
+    "changelog": "<h4>0.20.28</h4><ul><li>Docs: the isolated restore-test guide now builds the runner image with the tag the code actually looks for (aaihb-restore-test:0.20.6). The guide said 0.14.2, so anyone following it ended at \"test environment not ready\".</li><li>Docs: removed the stale version numbers from the restore-test guide title and its first preparation step.</li><li>Package: removed stray __pycache__ bytecode from the distribution.</li><li>Version: aligned the plugin header, version constant, asset version and readme Stable tag to 0.20.28.</li></ul><h4>0.20.27</h4><ul><li>Fix the stale version labels in the app header and the recovery vault hero: both printed a hard-coded build number (0.20.13 / 0.20.20), so every release showed an old number. They now read the plugin version constant.</li><li>Align the package version strings (plugin header, version constant, asset version, readme Stable tag, distribution note) to 0.20.27.</li></ul><h4>0.20.26</h4><ul><li>English pass 2: every remaining screen internationalized - repair, recovery, vault admin/io/db/test/guard/full/command, business checks, reports, workspace, dashboard, notifications, onboarding, partner API, diagnostics, compatibility, backup jobs, billing, verification.</li></ul><h4>0.20.20</h4><ul><li>vault-admin.php (Backup and restore) translated to English.</li></ul><h4>0.20.19</h4><ul><li>value.php (Value and support) translated to English.</li><li>Connection settings are mirrored in encrypted form and restored automatically when they are wiped.</li><li>A 409 sequence_conflict is now realigned and retried automatically.</li></ul><h4>0.20.18</h4><ul><li>control-center.php translated to English.</li></ul>"
   }
 }
