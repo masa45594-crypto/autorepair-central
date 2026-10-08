@@ -16,6 +16,25 @@ import urllib.request
 import zipfile
 
 ROOT=Path(__file__).resolve().parents[1]
+
+import re
+# --- AAIHB: resolve rehearsal zips from ci/fixtures first, then the repo root.
+# Keeping the two rehearsal fixtures under ci/fixtures lets the repo root hold
+# only the current distribution zip without breaking the restore rehearsal.
+def _aaihb_plugin_zips():
+    _zs = []
+    for _d in (ROOT/'ci'/'fixtures', ROOT):
+        if _d.is_dir():
+            _zs = list(_d.glob('autorepair-ai-hosting-beta-*.zip'))
+            if len(_zs) >= 2:
+                break
+    def _k(p): return [int(x) for x in re.findall(r'\d+', p.name)]
+    return sorted(_zs, key=_k)
+_AAIHB_ZIPS = _aaihb_plugin_zips()
+CUR_ZIP = _AAIHB_ZIPS[-1] if _AAIHB_ZIPS else None
+PREV_ZIP = _AAIHB_ZIPS[-2] if len(_AAIHB_ZIPS) >= 2 else CUR_ZIP
+if CUR_ZIP is None:
+    raise RuntimeError('no autorepair-ai-hosting-beta-*.zip found in ci/fixtures or the repo root')
 REPORTS=ROOT/'reports'
 IMAGE='aaihb-restore-test:0.20.6'
 DB_IMAGE=os.environ.get('AAIHB_DB_IMAGE','mysql:8.4')
@@ -51,9 +70,9 @@ def main():
         report['wordpress_zip_sha256']=hashlib.sha256(archive.read_bytes()).hexdigest()
         unzip_safe(archive,work);site=work/'site';(work/'wordpress').rename(site)
         # Start from the prior release so the deployed-file update path is tested for real.
-        unzip_safe(ROOT/'autorepair-ai-hosting-beta-0.20.5.zip',site/'wp-content/plugins')
-        report['plugin_previous_zip_sha256']=hashlib.sha256((ROOT/'autorepair-ai-hosting-beta-0.20.5.zip').read_bytes()).hexdigest()
-        report['plugin_zip_sha256']=hashlib.sha256((ROOT/'autorepair-ai-hosting-beta-0.20.6.zip').read_bytes()).hexdigest()
+        unzip_safe(PREV_ZIP,site/'wp-content/plugins')
+        report['plugin_previous_zip_sha256']=hashlib.sha256((PREV_ZIP).read_bytes()).hexdigest()
+        report['plugin_zip_sha256']=hashlib.sha256((CUR_ZIP).read_bytes()).hexdigest()
         cf7_archive=work/'contact-form-7.zip'
         with urllib.request.urlopen('https://downloads.wordpress.org/plugin/contact-form-7.latest-stable.zip',timeout=120) as src,cf7_archive.open('wb') as dst:shutil.copyfileobj(src,dst)
         unzip_safe(cf7_archive,site/'wp-content/plugins')
@@ -88,7 +107,7 @@ define('AAIHB_VAULT_DIR','/work/vault');define('AAIHB_PUBLIC_ROOT','/work/site')
         report['stage']='real_plugin_upgrade'
         plugin_dir=site/'wp-content/plugins/autorepair-ai-hosting-beta'
         shutil.rmtree(plugin_dir)
-        unzip_safe(ROOT/'autorepair-ai-hosting-beta-0.20.6.zip',site/'wp-content/plugins')
+        unzip_safe(CUR_ZIP,site/'wp-content/plugins')
         docker(['exec',php,'php','/ci/upgrade.php'],timeout=180)
         report['plugin_update']=json.loads((work/'upgrade.json').read_text())
         if not all(report['plugin_update'].values()):raise RuntimeError('plugin update verification failed')
