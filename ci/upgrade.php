@@ -6,8 +6,7 @@ try{
  require '/work/site/wp-load.php';require_once ABSPATH.'wp-admin/includes/plugin.php';
  $plugin='autorepair-ai-hosting-beta/autorepair-ai-hosting-beta.php';
  $out['active_after_update']=is_plugin_active($plugin);
- - $expect=getenv('AAIHB_EXPECT_VERSION');if(!is_string($expect)||$expect===''){$expect='0.20.6';}
-+ $expect=getenv('AAIHB_EXPECT_VERSION');if(!is_string($expect)||$expect===''){$expect='0.20.26';}
+ $expect=getenv('AAIHB_EXPECT_VERSION');if(!is_string($expect)||$expect===''){$expect='0.20.26';}
  $data=get_plugin_data(WP_PLUGIN_DIR.'/'.$plugin,false,false);$out['version_is_current']=($data['Version']??'')===$expect;
  $out['legacy_data_preserved']=get_option('aaihb_upgrade_probe')==='legacy-0.20.5';
  $out['new_control_center_loaded']=class_exists('AAIHB_Verification')&&class_exists('AAIHB_ControlCenter');
