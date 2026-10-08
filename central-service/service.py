@@ -855,6 +855,16 @@ def overage_price_info(key):
     _overage_price_cache[price_id]=(time.time(),info)
     return info
 
+def redact_path(path):
+    """Drop the query string before it reaches the audit trail.
+
+    /v1/manage/portal carries the management token in its query string, so logging
+    self.path verbatim could persist a live credential in audit_log (which the audit
+    endpoint then hands back). Only the route is recorded.
+    """
+    return str(path).split('?')[0]
+
+
 _RATE_HITS={};_RATE_LOCK=threading.Lock()
 
 def rate_limited(key,limit=5,window=600):
@@ -883,7 +893,7 @@ def handler(store):
             self.send_header('Content-Type','application/json');self.send_header('Cache-Control','no-store');self.send_header('Content-Length',str(len(body)));self.end_headers();self.wfile.write(body)
         def dispatch(self):
             if rate_limited('ip:'+self.client_address[0],240,60):
-                store.audit('http','rate_limited',self.path)
+                store.audit('http','rate_limited',redact_path(self.path))
                 return self.reply(429,{'error':'rate_limited'})
             try:
                 auth=self.headers.get('Authorization','');token=auth[7:] if auth.startswith('Bearer ') else ''
@@ -912,6 +922,20 @@ def handler(store):
                     # sites each reports, and which ones have stopped syncing.
                     with store.db() as c:row={'account':store.auth_manage_or_hub(c,token)}
                     r={'account':row['account'],'hubs':store.list_hubs(row['account'])}
+                elif self.command=='GET' and self.path.split('?')[0]=='/v1/manage/audit':
+                    # Read-only tail of the audit trail (auth refusals, sequence conflicts,
+                    # rate-limit hits, Stripe events). The trail is global -- audit_log has no
+                    # account column -- so this sits behind the same admin gate as /v1/admin/*:
+                    # a per-customer management token must never read other accounts' rows.
+                    admin=os.environ.get('ADMIN_TOKEN','')
+                    given=self.headers.get('X-Admin-Token','')
+                    if not admin or not hmac.compare_digest(given,admin):raise Unauthorized()
+                    q=parse_qs(urlparse(self.path).query)
+                    try:limit=int((q.get('limit') or ['50'])[0])
+                    except (TypeError,ValueError):raise Invalid('invalid limit')
+                    if not 1<=limit<=200:raise Invalid('invalid limit')
+                    entries=store.audit_tail(limit)
+                    r={'count':len(entries),'entries':entries}
                 elif self.command=='POST' and self.path=='/v1/manage/hubs/revoke':
                     # Same management-token auth. Revoking is ownership-checked (revoke_owned)
                     # and only stops future counting; already observed peaks are not rewritten.
@@ -1088,7 +1112,7 @@ def handler(store):
                     price_id=os.environ.get('STRIPE_PRICE_ID','');success_url=os.environ.get('SIGNUP_SUCCESS_URL','')
                     cancel_url=os.environ.get('SIGNUP_CANCEL_URL','');key=stripe_secret_key()
                     if not (price_id and success_url and cancel_url and key):return self.reply(404,{'error':'not_found'})
-                    if rate_limited(self.client_address[0]):store.audit('http','rate_limited',self.path);return self.reply(429,{'error':'rate_limited'})
+                    if rate_limited(self.client_address[0]):store.audit('http','rate_limited',redact_path(self.path));return self.reply(429,{'error':'rate_limited'})
                     size=int(self.headers.get('Content-Length','0'))
                     if not 0<=size<=4000:raise Invalid('payload size')
                     body=json.loads(self.rfile.read(size)) if size else {}
@@ -1104,13 +1128,13 @@ def handler(store):
                 else:return self.reply(404,{'error':'not_found'})
                 self.reply(200,r)
             except Unauthorized:
-                store.audit('http','unauthorized',self.path);self.reply(401,{'error':'unauthorized'})
+                store.audit('http','unauthorized',redact_path(self.path));self.reply(401,{'error':'unauthorized'})
             except Conflict:
-                store.audit('http','sequence_conflict',self.path);self.reply(409,{'error':'sequence_conflict'})
+                store.audit('http','sequence_conflict',redact_path(self.path));self.reply(409,{'error':'sequence_conflict'})
             except (Invalid,ValueError,UnicodeError) as exc:
-                store.audit('http','invalid_request',self.path+' '+str(exc)[:80]);self.reply(400,{'error':'invalid_request'})
+                store.audit('http','invalid_request',redact_path(self.path)+' '+str(exc)[:80]);self.reply(400,{'error':'invalid_request'})
             except Exception as exc:
-                store.audit('http','unavailable',self.path+' '+str(exc)[:80]);self.reply(503,{'error':'temporarily_unavailable'})
+                store.audit('http','unavailable',redact_path(self.path)+' '+str(exc)[:80]);self.reply(503,{'error':'temporarily_unavailable'})
         def do_GET(self):self.dispatch()
         def do_POST(self):self.dispatch()
     return Handler
