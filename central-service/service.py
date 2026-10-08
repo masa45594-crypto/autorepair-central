@@ -786,23 +786,37 @@ def with_billing_contract(usage):
     result.update(mode='live' if live else 'test',billable=live,included_sites=included_sites(),overage_sites=max(0,usage['current']-included_sites()))
     return result
 
-def sync_stripe_meter(store,account,period,current,sequence):
-    """Best-effort report of the *current* extra-site count to the Billing Meter.
+def sync_stripe_meter(store,account,period,current,sequence,raise_on_error=False):
+    """Report the *current* extra-site count to the Stripe Billing Meter.
 
-    The Dashboard meter is configured with ``last`` aggregation.  Replaying the same
-    snapshot uses a stable identifier, so a retry cannot add another site's worth of usage.
-    A Stripe outage never makes WordPress synchronization fail; the next snapshot retries.
+    The Dashboard meter is configured with ``last`` aggregation, so the value must be the
+    current number of excess sites -- never a running total or this period's peak. Replaying
+    the same snapshot uses a stable identifier, so a retry cannot add another site's worth of
+    usage. Reporting 0 is meaningful: with ``last`` aggregation it clears a previous charge
+    after sites are removed again.
+
+    Best-effort by default: a Stripe outage never fails the hub's snapshot response, and the
+    next snapshot retries. When ``raise_on_error`` is true the caller is about to admit a site
+    that only exists above the included allowance, so the error propagates instead -- hiding
+    it would let that extra site run without a matching charge.
     """
     key=stripe_secret_key();event_name=os.environ.get('STRIPE_METER_EVENT_NAME','')
-    if not (key and event_name):return
+    if not (key and event_name):
+        if raise_on_error:raise Invalid('Stripe meter billing is not configured')
+        return {'reported':False,'reason':'not_configured'}
     state=store.stripe_account_state(account);customer=state['customer_id']
-    if not customer:return
+    if not customer:
+        if raise_on_error:raise Invalid('no Stripe customer recorded for this account yet')
+        return {'reported':False,'reason':'no_customer'}
     overage=max(0,current-included_sites())
     identifier='arai_'+digest(account+'|'+period+'|'+str(sequence)+'|'+str(overage))[:48]
     try:
         if stripe_live_enabled():record_meter_event(event_name,customer,overage,key,identifier,allow_live=True)
         else:record_meter_event(event_name,customer,overage,key,identifier)
-    except Exception:pass
+    except Exception:
+        if raise_on_error:raise
+        return {'reported':False,'reason':'stripe_error'}
+    return {'reported':True,'overage_sites':overage,'identifier':identifier}
 
 def sync_stripe_overage_quantity(store,account,current):
     """Synchronise only sites 11+ to Stripe's separate $3 subscription item.
@@ -988,9 +1002,9 @@ def handler(store):
                     size=int(self.headers.get('Content-Length','0'))
                     if not 0<size<=8000000:raise Invalid('payload size')
                     r=store.snapshot(token,json.loads(self.rfile.read(size)))
-                    # The base $29 item and the $3 extra-site item are deliberately separate.
-                    if os.environ.get('STRIPE_OVERAGE_PRICE_ID'):r['billing_sync']=sync_stripe_overage_quantity(store,h['account'],r['current'])
-                    else:sync_stripe_meter(store,h['account'],r['month'],r['current'],r['sequence'])
+                    # The $3 overage is billed from Billing Meter events: a metered price
+                    # never carries a quantity, so nothing is written to a subscription item.
+                    sync_stripe_meter(store,h['account'],r['month'],r['current'],r['sequence'])
                     r=with_billing_contract(r)
                 elif self.command=='POST' and self.path=='/v1/registration-check':
                     # Called before the WordPress plugin persists a new site. It makes the
@@ -1006,7 +1020,11 @@ def handler(store):
                     with store.db() as c:
                         already=c.execute('SELECT 1 FROM sites WHERE hub=? AND site=?',(h['id'],site)).fetchone() is not None
                         current=store.count(c,h['account'])+(0 if already else 1)
-                    billing=sync_stripe_overage_quantity(store,h['account'],current)
+                        usage=store.result(c,h,utc())
+                    # The eleventh and later site must be billable before it is admitted:
+                    # unlike the snapshot path this raises, so a failed Meter report refuses
+                    # the registration instead of letting an extra site run uncharged.
+                    billing=sync_stripe_meter(store,h['account'],usage['month'],current,usage['sequence'],raise_on_error=True)
                     r={'allowed':True,'current':current,'included_sites':included_sites(),'billing_sync':billing}
                 elif self.command=='POST' and self.path=='/v1/stripe/test-checkout':
                     # Compatibility shim for an already-connected hub upgrading itself to a
