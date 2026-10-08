@@ -304,30 +304,30 @@ class Tests(unittest.TestCase):
   finally:
    service_module.record_meter_event=original;del os.environ['STRIPE_TEST_SECRET_KEY'];del os.environ['STRIPE_METER_EVENT_NAME']
    server.shutdown();server.server_close();thread.join()
- def test_snapshot_endpoint_syncs_only_overage_quantity(self):
+ def test_snapshot_endpoint_reports_overage_to_meter_only(self):
+  # Replaces the test that asserted a $3 subscription-item quantity sync. That path cannot
+  # work: a Billing Meter price is metered, so Stripe bills it from meter events and a
+  # quantity must never be set. The overage is reported to the Meter instead, and the
+  # quantity helpers are no longer reachable from the HTTP surface.
   import service as service_module
   self.s.set_stripe_subscription('a','sub_qty','si_qty',customer_id='cus_qty')
-  calls=[];original_get=service_module.stripe_get;original_create=service_module.create_subscription_item;original_update=service_module.update_subscription_item_quantity;original_delete=service_module.delete_subscription_item
-  service_module.stripe_get=lambda path,key:{'status':'active'}
-  service_module.create_subscription_item=lambda sub,price,quantity,key,**kwargs:calls.append(('create',sub,price,quantity,key,kwargs)) or {'id':'si_overage'}
-  service_module.update_subscription_item_quantity=lambda item,quantity,key,**kwargs:calls.append(('update',item,quantity,key,kwargs))
-  service_module.delete_subscription_item=lambda item,key,**kwargs:calls.append(('delete',item,key,kwargs)) or {'id':item,'deleted':True}
-  os.environ['STRIPE_TEST_SECRET_KEY']='sk_test_fake';os.environ['STRIPE_OVERAGE_PRICE_ID']='price_overage';os.environ['STRIPE_INCLUDED_SITES']='2'
+  calls=[];original=service_module.record_meter_event
+  service_module.record_meter_event=lambda event,customer,value,key,identifier:calls.append((event,customer,value,key,identifier))
+  os.environ['STRIPE_TEST_SECRET_KEY']='sk_test_fake';os.environ['STRIPE_OVERAGE_PRICE_ID']='price_overage';os.environ['STRIPE_METER_EVENT_NAME']='managed_sites_overage';os.environ['STRIPE_INCLUDED_SITES']='2'
   server=HTTPServer(('127.0.0.1',0),handler(self.s));thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
   try:
    url='http://127.0.0.1:'+str(server.server_port)
    req=urllib.request.Request(url+'/v1/snapshot',data=json.dumps({'sequence':1,'sites':self.ids[:3]}).encode(),headers={'Authorization':'Bearer '+self.a})
    with urllib.request.urlopen(req) as res:self.assertEqual(json.load(res)['current'],3)
-   self.assertEqual(calls,[('create','sub_qty','price_overage',1,'sk_test_fake',{})])
    req=urllib.request.Request(url+'/v1/snapshot',data=json.dumps({'sequence':2,'sites':self.ids}).encode(),headers={'Authorization':'Bearer '+self.a})
    with urllib.request.urlopen(req) as res:self.assertEqual(json.load(res)['current'],4)
-   self.assertEqual(calls[-1],('update','si_overage',2,'sk_test_fake',{}))
    req=urllib.request.Request(url+'/v1/snapshot',data=json.dumps({'sequence':3,'sites':[]}).encode(),headers={'Authorization':'Bearer '+self.a})
    with urllib.request.urlopen(req) as res:self.assertEqual(json.load(res)['current'],0)
-   self.assertEqual(calls[-1],('delete','si_overage','sk_test_fake',{}))
+   # 3 sites -> 1 overage, 4 -> 2, 0 -> 0: 'last' aggregation needs the true current value.
+   self.assertEqual([c[:4] for c in calls],[('managed_sites_overage','cus_qty',1,'sk_test_fake'),('managed_sites_overage','cus_qty',2,'sk_test_fake'),('managed_sites_overage','cus_qty',0,'sk_test_fake')])
   finally:
-   service_module.stripe_get=original_get;service_module.create_subscription_item=original_create;service_module.update_subscription_item_quantity=original_update;service_module.delete_subscription_item=original_delete
-   del os.environ['STRIPE_TEST_SECRET_KEY'];del os.environ['STRIPE_OVERAGE_PRICE_ID'];del os.environ['STRIPE_INCLUDED_SITES']
+   service_module.record_meter_event=original
+   del os.environ['STRIPE_TEST_SECRET_KEY'];del os.environ['STRIPE_OVERAGE_PRICE_ID'];del os.environ['STRIPE_METER_EVENT_NAME'];del os.environ['STRIPE_INCLUDED_SITES']
    server.shutdown();server.server_close();thread.join()
  def test_signup_page(self):
   server=HTTPServer(('127.0.0.1',0),handler(self.s));thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
