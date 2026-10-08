@@ -33,6 +33,7 @@ def _aaihb_plugin_zips():
 _AAIHB_ZIPS = _aaihb_plugin_zips()
 CUR_ZIP = _AAIHB_ZIPS[-1] if _AAIHB_ZIPS else None
 PREV_ZIP = _AAIHB_ZIPS[-2] if len(_AAIHB_ZIPS) >= 2 else CUR_ZIP
+CUR_VERSION=re.findall(r'\d+\.\d+\.\d+',CUR_ZIP.name)[0] if CUR_ZIP else ''
 if CUR_ZIP is None:
     raise RuntimeError('no autorepair-ai-hosting-beta-*.zip found in ci/fixtures or the repo root')
 REPORTS=ROOT/'reports'
@@ -73,6 +74,7 @@ def main():
         unzip_safe(PREV_ZIP,site/'wp-content/plugins')
         report['plugin_previous_zip_sha256']=hashlib.sha256((PREV_ZIP).read_bytes()).hexdigest()
         report['plugin_zip_sha256']=hashlib.sha256((CUR_ZIP).read_bytes()).hexdigest()
+        report['plugin_expected_version']=CUR_VERSION
         cf7_archive=work/'contact-form-7.zip'
         with urllib.request.urlopen('https://downloads.wordpress.org/plugin/contact-form-7.latest-stable.zip',timeout=120) as src,cf7_archive.open('wb') as dst:shutil.copyfileobj(src,dst)
         unzip_safe(cf7_archive,site/'wp-content/plugins')
@@ -102,7 +104,7 @@ define('AAIHB_VAULT_DIR','/work/vault');define('AAIHB_PUBLIC_ROOT','/work/site')
         containers.append(php)
         docker(['run','-d','--name',php,'--network','none','--user',str(os.getuid())+':'+str(os.getgid()),'--mount','type=bind,src='+str(work)+',dst=/work',
                 '--mount','type=bind,src='+str(ROOT/'ci')+',dst=/ci,readonly','--mount','type=volume,src='+socket+',dst=/socket,readonly',
-                '-e','TEST_DB_PASSWORD='+password,'-e','AAIHB_CI=1',IMAGE,'php','-S','0.0.0.0:8080','-t','/work/site'])
+                '-e','TEST_DB_PASSWORD='+password,'-e','AAIHB_CI=1','-e','AAIHB_EXPECT_VERSION='+CUR_VERSION,IMAGE,'php','-S','0.0.0.0:8080','-t','/work/site'])
         docker(['exec',php,'php','/ci/setup.php'],timeout=180)
         report['stage']='real_plugin_upgrade'
         plugin_dir=site/'wp-content/plugins/autorepair-ai-hosting-beta'
@@ -175,8 +177,9 @@ define('AAIHB_VAULT_DIR','/work/vault');define('AAIHB_PUBLIC_ROOT','/work/site')
         negative=runner.execute({**request,'dir':str(corrupt)});report['corrupt_backup_rejected']=negative['status']=='failed'
         if not report['corrupt_backup_rejected']:raise RuntimeError('corruption accepted')
         report['status']='passed';report['stage']='complete'
-    except Exception:
+    except Exception as error:
         report['status']='failed'
+        report['error']=type(error).__name__+': '+str(error)
     finally:
         clean=True
         for container in reversed(containers):
