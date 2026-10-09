@@ -6,7 +6,7 @@ AutoRepair AI Hosting Beta は、WordPress サイトの**独立した診断・�
 
 **このリポジトリで配布している正規版は、最新の `autorepair-ai-hosting-beta-<version>.zip` だけです。**
 
-- 正規版: `autorepair-ai-hosting-beta-0.20.30.zip`
+- 正規版: `autorepair-ai-hosting-beta-0.20.37.zip`
 - 自動更新フィード: [`update.json`](./update.json)（`version` / `download_url` / `sha256` を保持）
 - プラグイン本体のソースは **zip の中だけ**にあります。リポジトリ直下に同名フォルダは置いていません（二重管理の防止）。
 - 過去バージョンの zip は互換性確認用に残していたものですが、現在は **最新版のみを正**とします。古い zip は予告なく削除します。
