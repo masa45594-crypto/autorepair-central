@@ -13,10 +13,11 @@ class Invalid(Exception): pass
 class Conflict(Exception): pass
 class Unauthorized(Exception): pass
 
-SIGNUP_PAGE_HTML="""<!doctype html><html lang="ja"><head><meta charset="utf-8"><title>AutoRepair AI Hosting お申し込み(テスト)</title></head>
+SIGNUP_PAGE_HTML="""<!doctype html><html lang="ja"><head><meta charset="utf-8"><title>AutoRepair AI Hosting お申し込み__TITLE_SUFFIX__</title></head>
 <body style="font-family:sans-serif;max-width:480px;margin:80px auto;text-align:center">
 <h1>AutoRepair AI Hosting</h1>
-<p>これはテストモードのお申し込み画面です。実際の課金は発生しません。</p>
+<p>__NOTICE__</p>
+<p style="font-size:14px;color:#444">__PRICE__</p>
 <p><input id="email" type="email" placeholder="メールアドレス(任意)" style="width:100%;padding:8px;box-sizing:border-box;margin-bottom:12px"></p>
 <button id="go" style="padding:10px 24px;font-size:16px">お申し込みへ進む</button>
 <p id="err" style="color:#c00"></p>
@@ -686,6 +687,51 @@ def stripe_live_enabled():
     """An explicit second switch prevents accidental live charging after a key is pasted."""
     return os.environ.get('STRIPE_LIVE_ENABLED','')=='1'
 
+def stripe_signup_available():
+    """True only when /v1/signup can start a Checkout Session without mixing key modes.
+
+    A live key with STRIPE_LIVE_ENABLED off raises inside create_checkout_session(),
+    so the page is withheld instead of being shown and then failing on the button.
+    """
+    key=stripe_secret_key()
+    if key.startswith('sk_live_'):return stripe_live_enabled()
+    if key.startswith('sk_test_'):return True
+    return False
+
+def _signup_price_text():
+    """Price line for the live signup screen, derived from the same env values the
+    billing maths uses. Falls back to a neutral sentence rather than showing a wrong
+    number if those values are unreadable."""
+    try:
+        base=int(os.environ.get('PRICE_BASE_USD_CENTS','2900'))
+        unit=int(os.environ.get('PRICE_UNIT_USD_CENTS','300'))
+        inc=included_sites()
+        return ('月額 $%d.%02d（%dサイトまで）／%dサイト目以降は1サイトにつき月額 $%d.%02d'
+                % (base//100,base%100,inc,inc+1,unit//100,unit%100))
+    except Exception:
+        return '料金は Stripe の請求内容に従います。'
+
+def signup_page_html():
+    """Render the signup screen for the mode the button will actually use.
+
+    The page used to hard-code 'テストモード ... 実際の課金は発生しません' even while
+    live billing was enabled, so a real subscription could be started from a screen
+    that promised no charge. The wording now follows the key in use plus
+    STRIPE_LIVE_ENABLED, so the page can never describe a different mode than the one
+    the click starts.
+    """
+    if stripe_secret_key().startswith('sk_live_') and stripe_live_enabled():
+        suffix=''
+        notice='これは本番のお申し込み画面です。ボタンを押して決済を完了すると、実際に課金されます。'
+        price=_signup_price_text()
+    else:
+        suffix='(テスト)'
+        notice='これはテストモードのお申し込み画面です。実際の課金は発生しません。'
+        price='テスト用の鍵を使用します。実際の請求は作成されません。'
+    return (SIGNUP_PAGE_HTML.replace('__TITLE_SUFFIX__',suffix)
+            .replace('__NOTICE__',notice).replace('__PRICE__',price))
+
+
 def stripe_mode(key):
     if key.startswith('sk_live_') and stripe_live_enabled():return 'live'
     if key.startswith('sk_test_'):return 'test'
@@ -932,12 +978,18 @@ def handler(store):
                 auth=self.headers.get('Authorization','');token=auth[7:] if auth.startswith('Bearer ') else ''
                 if self.command=='GET' and self.path=='/v1/usage': r=with_billing_contract(store.status(token))
                 elif self.command=='GET' and self.path=='/signup':
-                    # A minimal test-purchase screen: it only calls the existing POST
+                    # A minimal purchase screen: it only calls the existing POST
                     # /v1/signup and redirects to the Checkout URL that returns. Same
                     # configuration gate as /v1/signup, so an unfinished deployment doesn't
                     # advertise a half-built signup flow.
+                    # It is additionally gated on the mode the button will actually use:
+                    # with a live key and STRIPE_LIVE_ENABLED=1 the click starts a real
+                    # subscription, so the screen must not promise that no charge occurs
+                    # (it used to hard-code the test wording), and it must not be shown at
+                    # all when the key mode and the live switch disagree.
                     if not all((os.environ.get('STRIPE_PRICE_ID'),os.environ.get('SIGNUP_SUCCESS_URL'),os.environ.get('SIGNUP_CANCEL_URL'),stripe_secret_key())):return self.reply(404,{'error':'not_found'})
-                    body=SIGNUP_PAGE_HTML.encode('utf-8')
+                    if not stripe_signup_available():return self.reply(404,{'error':'not_found'})
+                    body=signup_page_html().encode('utf-8')
                     self.send_response(200);self.send_header('Content-Type','text/html; charset=utf-8');self.send_header('Cache-Control','no-store');self.send_header('Content-Length',str(len(body)));self.end_headers();self.wfile.write(body);return
                 elif self.command=='GET' and self.path.startswith('/v1/manage/portal'):
                     # A GET (not POST) so this works as a plain link clicked from email.
