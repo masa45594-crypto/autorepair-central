@@ -486,9 +486,11 @@ class Store:
         included=included_sites()
         billable_sites,estimate_cents=billing_amounts(m['base'],m['unit'],m['peak'],included)
         base_yen,unit_yen=cents_to_yen(m['base']),cents_to_yen(m['unit'])
-        # The plugin's integrity check is estimate_yen == base_yen + unit_yen*peak, so the
-        # display keeps that shape; the authoritative figures stay in cents.
-        estimate_yen=base_yen+unit_yen*m['peak']
+        # Yen must follow the same basis as the charge: only the excess sites above the
+        # plan's allowance are billed, so multiplying the unit price by the whole peak
+        # (which the base price already covers up to `included`) would show a total the
+        # customer is never charged. The authoritative figures stay in USD cents.
+        estimate_yen=base_yen+unit_yen*billable_sites
         current=self.count(c,h['account'])
         # Warning only: a cap never blocks new site registrations or usage (see README).
         return dict(mode='pilot',month=period,current=current,peak=m['peak'],currency='usd',base_usd_cents=m['base'],unit_usd_cents=m['unit'],estimate_usd_cents=estimate_cents,billable_sites=billable_sites,included_sites=included,fx_rate_usd_jpy=usd_jpy_rate(),base_yen=base_yen,unit_yen=unit_yen,estimate_yen=estimate_yen,stale_hubs=stale,sequence=h['sequence'],observed_at=now,billable=False,spending_cap_yen=cap,over_spending_cap=bool(cap) and estimate_yen>cap,overage_sites=max(0,current-included))
@@ -537,7 +539,7 @@ class Store:
             unsynced=c.execute("SELECT COUNT(*) FROM hubs WHERE account=? AND revoked='' AND (updated='' OR updated<?)",(account,end)).fetchone()[0]
             grace_hours=(datetime.fromisoformat(now)-datetime.fromisoformat(end)).total_seconds()/3600
             if unsynced and grace_hours<72 and not force:raise Invalid(f'{unsynced} hub(s) have not reported since this period ended at {end}; wait until 72h after that, or pass force=True to accept the risk')
-            r=dict(row);_bill,_cents=billing_amounts(r['base'],r['unit'],r['peak'],included_sites());r.update(mode='pilot',currency='usd',base_usd_cents=r['base'],unit_usd_cents=r['unit'],estimate_usd_cents=_cents,billable_sites=_bill,included_sites=included_sites(),base_yen=cents_to_yen(r['base']),unit_yen=cents_to_yen(r['unit']),estimate_yen=cents_to_yen(r['base'])+cents_to_yen(r['unit'])*r['peak'],amount_yen=cents_to_yen(_cents),billable=False,unsynced_hubs=unsynced)
+            r=dict(row);_bill,_cents=billing_amounts(r['base'],r['unit'],r['peak'],included_sites());r.update(mode='pilot',currency='usd',base_usd_cents=r['base'],unit_usd_cents=r['unit'],estimate_usd_cents=_cents,billable_sites=_bill,included_sites=included_sites(),base_yen=cents_to_yen(r['base']),unit_yen=cents_to_yen(r['unit']),estimate_yen=cents_to_yen(r['base'])+cents_to_yen(r['unit'])*_bill,amount_yen=cents_to_yen(r['base'])+cents_to_yen(r['unit'])*_bill,billable=False,unsynced_hubs=unsynced)
             return r
 
 def _base_subscription_item_id(items):
