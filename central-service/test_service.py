@@ -11,7 +11,7 @@ class Tests(unittest.TestCase):
  def tearDown(self):self.tmp.cleanup()
  def push(self,t,seq,ids,now=None):return self.s.snapshot(t,{'sequence':seq,'sites':ids},now or self.now)
  def test_aggregate(self):
-  self.push(self.a,1,self.ids[:2]);r=self.push(self.b,1,self.ids[1:3]);self.assertEqual(r['current'],3);self.assertEqual(r['estimate_yen'],5996)
+  self.push(self.a,1,self.ids[:2]);r=self.push(self.b,1,self.ids[1:3]);self.assertEqual(r['current'],3);self.assertEqual(r['estimate_yen'],4577)
  def test_tenant_isolation(self):
   self.push(self.a,1,self.ids);self.assertEqual(self.s.status(self.other,self.now)['current'],0)
  def test_retry_idempotent(self):
@@ -96,12 +96,22 @@ class Tests(unittest.TestCase):
   self.assertEqual(self.s.status(self.a,self.now)['unit_yen'],473)
  def test_stale_not_deleted(self):
   self.push(self.a,1,self.ids);r=self.s.status(self.a,'2026-09-12T00:00:00+00:00');self.assertEqual(r['current'],4);self.assertGreater(r['stale_hubs'],0);self.assertFalse(r['billable'])
+ def test_yen_uses_billable_sites(self):
+  # Regression: 11 sites are $29.00 plus one excess site ($3.00) = 3200 cents. The yen line
+  # must follow that charge (4577 + 473 = 5050 yen), not 11 x the unit price (9780 yen).
+  # The same wrong basis also made a spending cap trip on money that was never charged.
+  ids=[digest(str(i)) for i in range(11)]
+  r=self.push(self.a,1,ids)
+  self.assertEqual((r['peak'],r['billable_sites'],r['estimate_usd_cents']),(11,1,3200))
+  self.assertEqual(r['estimate_yen'],5050)
+  e=self.s.export('a','2026-09-01',force=True)
+  self.assertEqual((e['billable_sites'],e['estimate_usd_cents'],e['estimate_yen'],e['amount_yen']),(1,3200,5050,5050))
  def test_spending_cap(self):
   with self.assertRaises(Invalid):self.s.set_spending_cap('does-not-exist',5000)
   with self.assertRaises(Invalid):self.s.set_spending_cap('a',-1)
   r=self.push(self.a,1,self.ids);self.assertEqual(r['spending_cap_yen'],0);self.assertFalse(r['over_spending_cap'])
-  self.s.set_spending_cap('a',5000)
-  r=self.s.status(self.a,self.now);self.assertEqual(r['estimate_yen'],6469);self.assertTrue(r['over_spending_cap'])
+  self.s.set_spending_cap('a',4000)
+  r=self.s.status(self.a,self.now);self.assertEqual(r['estimate_yen'],4577);self.assertTrue(r['over_spending_cap'])
   # Over the cap does not block anything: sync keeps working.
   r=self.push(self.a,2,self.ids);self.assertEqual(r['current'],4)
   self.s.set_spending_cap('a',20000)
@@ -544,8 +554,8 @@ class Tests(unittest.TestCase):
   server=HTTPServer(('127.0.0.1',0),handler(self.s));thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
   try:
    url='http://127.0.0.1:'+str(server.server_port)
-   req=urllib.request.Request(url+'/v1/manage/spending-cap',data=json.dumps({'spending_cap_yen':5000}).encode(),headers={'Authorization':'Bearer '+token},method='POST')
-   with urllib.request.urlopen(req) as res:self.assertEqual(json.load(res),{'account':'a','spending_cap_yen':5000})
+   req=urllib.request.Request(url+'/v1/manage/spending-cap',data=json.dumps({'spending_cap_yen':4000}).encode(),headers={'Authorization':'Bearer '+token},method='POST')
+   with urllib.request.urlopen(req) as res:self.assertEqual(json.load(res),{'account':'a','spending_cap_yen':4000})
    self.push(self.a,1,self.ids);self.assertTrue(self.s.status(self.a,self.now)['over_spending_cap'])
    bad=urllib.request.Request(url+'/v1/manage/spending-cap',data=json.dumps({'spending_cap_yen':'not-an-int'}).encode(),headers={'Authorization':'Bearer '+token},method='POST')
    with self.assertRaises(urllib.error.HTTPError) as err:urllib.request.urlopen(bad)
