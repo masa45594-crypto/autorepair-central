@@ -59,7 +59,7 @@ GPL は販売を禁じていません。ただし販売した場合、購入者�
 
 AutoRepair AI Hosting Beta is a WordPress plugin for independent diagnostics, recovery, and isolated restore rehearsal with separately verified backup status.
 
-**Canonical distribution:** the latest `autorepair-ai-hosting-beta-<version>.zip` (currently `0.20.30`) plus `update.json`. The plugin source ships only inside the zip; there is no duplicate source folder at the repository root. Older zips are not canonical and may be removed.
+**Canonical distribution:** the latest `autorepair-ai-hosting-beta-<version>.zip` (currently `0.20.37`) plus `update.json`. The plugin source ships only inside the zip; there is no duplicate source folder at the repository root. Older zips are not canonical and may be removed.
 
 **Requirements:** WordPress 6.2+ (tested to 6.8), PHP 7.4+, ZipArchive for backup features, single-site only.
 
