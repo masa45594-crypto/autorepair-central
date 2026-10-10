@@ -560,8 +560,9 @@ def handle_stripe_event(store,event):
     just recorded (see Store.record_stripe_event). Requires 'account' (and for provisioning,
     'hub') in the Stripe object's metadata -- set this on the Checkout Session, using
     subscription_data.metadata so it carries onto the subscription for later events too.
-    Checkout Session creation itself is not implemented yet, so nothing sets this metadata
-    yet; this function is the receiving half, ready for when it is."""
+    POST /v1/signup creates that Checkout Session, and create_checkout_session() in
+    stripe_draft.py sets metadata[account]/[hub]/[base]/[unit] plus the same keys under
+    subscription_data.metadata, so the events this function receives already carry them."""
     etype=event.get('type');obj=(event.get('data') or {}).get('object') or {}
     store.audit('stripe',str(etype),str(obj.get('id') or '')[:64])
     meta=obj.get('metadata') or {}
