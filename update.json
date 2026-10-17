@@ -1,14 +1,14 @@
 {
- "version": "0.20.45",
- "download_url": "https://raw.githubusercontent.com/masa45594-crypto/autorepair-central/main/autorepair-ai-hosting-beta-0.20.45-trial.zip",
- "sha256": "da6d110cb36a670a14773682a3a1e1a82b981c73a3ea73993484d3f746cb8d74",
+ "version": "0.20.46",
+ "download_url": "https://raw.githubusercontent.com/masa45594-crypto/autorepair-central/main/autorepair-ai-hosting-beta-0.20.46-trial.zip",
+ "sha256": "c59afaf26b8c26ba94833e4231626d22cba3b2e934ca358bb2d5127ae9b0dfa3",
  "requires": "6.2",
  "tested": "6.8",
  "requires_php": "7.4",
  "homepage": "https://ti0321.com/upload/",
- "last_updated": "2026-10-17 00:00:00",
+ "last_updated": "2026-10-18 00:00:00",
  "sections": {
-  "description": "0.20.45: GitHub Actions の unit テストが停止していた問題を修正しました（プラグイン本体の動作に変更はありません）。テスト用ファイルに WordPress の関数スタブを追加し、試用版の zip が最新版として選ばれたときに未定義関数で停止しないようにしました。0.20.44: 契約状態の確認を中央サービス経由で行うようにしました。拠点トークンを登録すると、有効な契約では試用期間の終了後も自動で有料機能が使えます。0.20.43: 申し込みボタンを1つに整理し、契約管理は説明文つきのリンクに変更。AutoRepair AI Hosting Beta. Pre-update protection, full-site backup and restore, isolated restore verification, proof reports, hub management, usage and billing display, and a built-in diagnostic panel. USD-based billing display.",
-  "changelog": "<h4>0.20.45</h4><ul><li>テスト用ファイル（tests/contracts.php）に WordPress の関数スタブを追加しました。プラグイン本体の動作に変更はありません。GitHub Actions の unit ジョブが試用版の zip を最新版として選んだときに、未定義関数で停止していた問題を解消します。</li></ul>\n<h4>0.20.44</h4><ul><li>契約状態の確認を中央サービス経由で行うようにしました。拠点トークンを登録すると、有効な契約では試用終了後も自動で有料機能が使えます（「契約状態を今すぐ確認する」ボタン付き）。</li></ul>\n<h4>0.20.43</h4><ul><li>「4. 申し込み」のボタンを、お申し込み用の1つに整理しました。すでにご契約中のお客様向けの「契約と支払いを確認する」は、説明文つきのリンクとして表示します。</li></ul>\n<h4>0.20.42</h4><ul><li>試用案内バナーの「料金と申し込み」リンクを、アップグレード画面の「4. 申し込み」へ直接ジャンプするようにしました。</li></ul>"
+  "description": "0.20.46: 重大な不具合を修正しました。中央サービスの拠点トークンが復号できない状態（サイトの移行・復元やソルト変更など）のとき、管理画面を開くと致命的エラーで全体が停止していました。復号に失敗した場合は通信不可時と同じ安全な扱いにし、管理画面を止めずに前回の契約判定を保持するようにしました。0.20.45: GitHub Actions の unit テストが停止していた問題を修正しました（プラグイン本体の動作に変更はありません）。テスト用ファイルに WordPress の関数スタブを追加し、試用版の zip が最新版として選ばれたときに未定義関数で停止しないようにしました。0.20.44: 契約状態の確認を中央サービス経由で行うようにしました。拠点トークンを登録すると、有効な契約では試用期間の終了後も自動で有料機能が使えます。0.20.43: 申し込みボタンを1つに整理し、契約管理は説明文つきのリンクに変更。AutoRepair AI Hosting Beta. Pre-update protection, full-site backup and restore, isolated restore verification, proof reports, hub management, usage and billing display, and a built-in diagnostic panel. USD-based billing display.",
+  "changelog": "<h4>0.20.46</h4><ul><li>重大な不具合を修正しました。中央サービスの拠点トークンが復号できない状態（サイトの移行・復元、暗号ソルトの変更など）のとき、管理画面を開くと致命的エラーで全体が停止していました。復号に失敗した場合は通信不可時と同じ安全な扱いにし、管理画面を止めずに前回の契約判定を保持するようにしました。</li></ul>\n<h4>0.20.45</h4><ul><li>テスト用ファイル（tests/contracts.php）に WordPress の関数スタブを追加しました。プラグイン本体の動作に変更はありません。GitHub Actions の unit ジョブが試用版の zip を最新版として選んだときに、未定義関数で停止していた問題を解消します。</li></ul>\n<h4>0.20.44</h4><ul><li>契約状態の確認を中央サービス経由で行うようにしました。拠点トークンを登録すると、有効な契約では試用終了後も自動で有料機能が使えます（「契約状態を今すぐ確認する」ボタン付き）。</li></ul>\n<h4>0.20.43</h4><ul><li>「4. 申し込み」のボタンを、お申し込み用の1つに整理しました。すでにご契約中のお客様向けの「契約と支払いを確認する」は、説明文つきのリンクとして表示します。</li></ul>\n<h4>0.20.42</h4><ul><li>試用案内バナーの「料金と申し込み」リンクを、アップグレード画面の「4. 申し込み」へ直接ジャンプするようにしました。</li></ul>"
  }
 }
