@@ -3,7 +3,7 @@ Not a production billing or payment entitlement system. Bind loopback behind TLS
 """
 import argparse, contextlib, hashlib, hmac, json, os, re, secrets, sqlite3, sys, threading, time
 import urllib.error, urllib.request
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 from stripe_draft import verify_webhook, create_checkout_session, create_portal_session, record_meter_event, create_subscription_item, update_subscription_item_quantity, delete_subscription_item
@@ -13,11 +13,10 @@ class Invalid(Exception): pass
 class Conflict(Exception): pass
 class Unauthorized(Exception): pass
 
-SIGNUP_PAGE_HTML="""<!doctype html><html lang="ja"><head><meta charset="utf-8"><title>AutoRepair AI Hosting お申し込み__TITLE_SUFFIX__</title></head>
+SIGNUP_PAGE_HTML="""<!doctype html><html lang="ja"><head><meta charset="utf-8"><title>AutoRepair AI Hosting お申し込み(テスト)</title></head>
 <body style="font-family:sans-serif;max-width:480px;margin:80px auto;text-align:center">
 <h1>AutoRepair AI Hosting</h1>
-<p>__NOTICE__</p>
-<p style="font-size:14px;color:#444">__PRICE__</p>
+<p>これはテストモードのお申し込み画面です。実際の課金は発生しません。</p>
 <p><input id="email" type="email" placeholder="メールアドレス(任意)" style="width:100%;padding:8px;box-sizing:border-box;margin-bottom:12px"></p>
 <button id="go" style="padding:10px 24px;font-size:16px">お申し込みへ進む</button>
 <p id="err" style="color:#c00"></p>
@@ -47,77 +46,6 @@ def period_start(now,anchor_day):
     y,m=(dt.year,dt.month) if dt.day>=anchor_day else ((dt.year,dt.month-1) if dt.month>1 else (dt.year-1,12))
     return f'{y:04d}-{m:02d}-{anchor_day:02d}'
 
-
-def _resolve_invoice_period(store,obj,meta):
-    """Resolve (account,month) for an invoice.* event.
-
-    Metadata is preferred; when 'month' is absent (the Checkout Session that creates
-    the subscription does not set it yet) fall back to the account's own anchor day
-    plus the invoice period_start, so a paid invoice is still recorded instead of
-    being silently skipped.
-    """
-    account=(meta.get('account') or '').strip()
-    month=(meta.get('month') or '').strip()
-    if not account:
-        customer=obj.get('customer') or ''
-        if isinstance(customer,str) and customer.startswith('cus_'):
-            with store.db() as c:
-                row=c.execute('SELECT id FROM accounts WHERE stripe_customer_id=?',(customer,)).fetchone()
-            if row:account=row['id']
-    if not account:return None,None,'no account (metadata missing and customer not linked)'
-    if not month:
-        start=obj.get('period_start')
-        if isinstance(start,(int,float)) and start>0:
-            with store.db() as c:
-                row=c.execute('SELECT anchor_day FROM accounts WHERE id=?',(account,)).fetchone()
-            if row:
-                month=period_start(datetime.fromtimestamp(start,timezone.utc).isoformat(),row['anchor_day'])
-    if not month:return account,None,'no month (metadata missing and no usable period_start)'
-    return account,month,None
-
-def _stripe_get(path,params,key,timeout=20):
-    """Minimal read-only Stripe GET. Lives here rather than in stripe_draft so the reconciler
-    needs no second file deployed; it never writes anything to Stripe."""
-    import urllib.parse,urllib.request
-    req=urllib.request.Request('https://api.stripe.com/v1/'+path+'?'+urllib.parse.urlencode(params),
-        headers={'Authorization':'Bearer '+key},method='GET')
-    with urllib.request.urlopen(req,timeout=timeout) as r:return json.load(r)
-
-def backfill_account(store,account,key,apply=False,transport=None,limit=100,now=None):
-    """Compare one account's paid Stripe invoices with our own payments table.
-
-    Writes only when apply=True, and writes through record_payment() -- the same path the
-    invoice.paid webhook uses -- so a webhook arriving later cannot double-count the month.
-    The default is a dry run: the shell prints what it would do and changes nothing.
-    """
-    with store.db() as c:
-        row=c.execute('SELECT stripe_customer_id,anchor_day FROM accounts WHERE id=?',(account,)).fetchone()
-    if not row:raise Invalid('unknown account')
-    customer=row['stripe_customer_id']
-    if not customer:
-        return {'account':account,'customer':None,'skipped':True,'reason':'no stripe customer linked','actions':[]}
-    transport=transport or _stripe_get
-    listing=transport('invoices',{'customer':customer,'status':'paid','limit':limit},key)
-    actions=[]
-    for inv in (listing.get('data') or []):
-        if inv.get('status')!='paid':continue
-        amount=inv.get('amount_paid');period=inv.get('period_start')
-        if not isinstance(amount,int) or amount<=0:
-            actions.append({'invoice':inv.get('id'),'action':'skip','reason':'nonpositive amount'});continue
-        if not isinstance(period,(int,float)) or period<=0:
-            actions.append({'invoice':inv.get('id'),'action':'skip','reason':'no period_start'});continue
-        # Same rule the invoice.paid webhook uses: the account's own anchor day, applied to
-        # the invoice's period_start, is what names the billing month.
-        month=period_start(datetime.fromtimestamp(period,timezone.utc).isoformat(),row['anchor_day'])
-        existing=store.payment_status(account,month)
-        if existing and existing['status']=='paid' and existing['amount']==amount:
-            actions.append({'invoice':inv.get('id'),'month':month,'amount':amount,'action':'already_recorded'});continue
-        if not apply:
-            actions.append({'invoice':inv.get('id'),'month':month,'amount':amount,'action':'would_record','previous':existing});continue
-        store.record_payment(account,month,'paid',amount,now=now)
-        actions.append({'invoice':inv.get('id'),'month':month,'amount':amount,'action':'recorded','previous':existing})
-    return {'account':account,'customer':customer,'skipped':False,'actions':actions}
-
 class Store:
     def __init__(self, path):
         self.path=path
@@ -129,10 +57,8 @@ class Store:
             CREATE TABLE IF NOT EXISTS months(account TEXT NOT NULL, month TEXT NOT NULL, peak INTEGER NOT NULL, base INTEGER NOT NULL, unit INTEGER NOT NULL, PRIMARY KEY(account,month));
             CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY, hub TEXT NOT NULL, sequence INTEGER NOT NULL, digest TEXT NOT NULL, received TEXT NOT NULL, count INTEGER NOT NULL, UNIQUE(hub,sequence));
             CREATE TABLE IF NOT EXISTS stripe_events(id TEXT PRIMARY KEY, type TEXT NOT NULL, received TEXT NOT NULL, payload TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS audit_log(id INTEGER PRIMARY KEY, at TEXT NOT NULL, actor TEXT NOT NULL, action TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '');
-            CREATE TABLE IF NOT EXISTS payments(account TEXT NOT NULL REFERENCES accounts(id), month TEXT NOT NULL, status TEXT NOT NULL, amount INTEGER, recorded_at TEXT NOT NULL, PRIMARY KEY(account,month));
+            CREATE TABLE IF NOT EXISTS payments(account TEXT NOT NULL, month TEXT NOT NULL, status TEXT NOT NULL, amount INTEGER, recorded_at TEXT NOT NULL, PRIMARY KEY(account,month));
             CREATE TABLE IF NOT EXISTS management_tokens(account TEXT PRIMARY KEY REFERENCES accounts(id), token_hash TEXT UNIQUE NOT NULL, stripe_customer TEXT NOT NULL, created TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS reconciliation_runs(id INTEGER PRIMARY KEY, started TEXT NOT NULL, finished TEXT NOT NULL, mode TEXT NOT NULL, apply INTEGER NOT NULL, accounts INTEGER NOT NULL, recorded INTEGER NOT NULL, detail TEXT NOT NULL);
             ''')
             # Migrations for databases created before these columns existed.
             try: c.execute('ALTER TABLE accounts ADD COLUMN anchor_day INTEGER NOT NULL DEFAULT 1')
@@ -145,7 +71,6 @@ class Store:
             except sqlite3.OperationalError: pass
             try: c.execute('ALTER TABLE accounts ADD COLUMN spending_cap INTEGER NOT NULL DEFAULT 0')
             except sqlite3.OperationalError: pass
-            migrate_pricing_to_usd_cents(c)
             try: c.execute("ALTER TABLE accounts ADD COLUMN stripe_subscription_id TEXT NOT NULL DEFAULT ''")
             except sqlite3.OperationalError: pass
             try: c.execute("ALTER TABLE accounts ADD COLUMN stripe_subscription_item_id TEXT NOT NULL DEFAULT ''")
@@ -158,18 +83,6 @@ class Store:
             except sqlite3.OperationalError: pass
             try: c.execute("ALTER TABLE accounts ADD COLUMN last_webhook_at TEXT NOT NULL DEFAULT ''")
             except sqlite3.OperationalError: pass
-            # payments was created without a foreign key in earlier releases and SQLite cannot
-            # add one in place, so rebuild the table once (rows whose account no longer exists
-            # are dropped first, so the rebuilt table's constraint holds).
-            row=c.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='payments'").fetchone()
-            if row and 'REFERENCES' not in (row[0] or ''):
-                c.execute("CREATE TABLE IF NOT EXISTS payments_orphans(account TEXT NOT NULL, month TEXT NOT NULL, status TEXT NOT NULL, amount INTEGER, recorded_at TEXT NOT NULL, moved_at TEXT NOT NULL)")
-                c.execute("INSERT INTO payments_orphans(account,month,status,amount,recorded_at,moved_at) SELECT account,month,status,amount,recorded_at,? FROM payments WHERE account NOT IN (SELECT id FROM accounts)",(utc(),))
-                c.execute('DELETE FROM payments WHERE account NOT IN (SELECT id FROM accounts)')
-                c.execute("CREATE TABLE payments_fk(account TEXT NOT NULL REFERENCES accounts(id), month TEXT NOT NULL, status TEXT NOT NULL, amount INTEGER, recorded_at TEXT NOT NULL, PRIMARY KEY(account,month))")
-                c.execute('INSERT INTO payments_fk SELECT account,month,status,amount,recorded_at FROM payments')
-                c.execute('DROP TABLE payments')
-                c.execute('ALTER TABLE payments_fk RENAME TO payments')
     @contextlib.contextmanager
     def db(self):
         c=sqlite3.connect(self.path,timeout=15,isolation_level=None);c.row_factory=sqlite3.Row
@@ -202,50 +115,11 @@ class Store:
         with self.db() as c:
             cur=c.execute('INSERT OR IGNORE INTO stripe_events(id,type,received,payload) VALUES(?,?,?,?)',(eid,etype,now or utc(),json.dumps(event)))
             return cur.rowcount==1
-    # ---- audit trail (who did what, when) ---------------------------------
-    def audit(self,actor,action,detail=''):
-        """Append one audit row. Never raises: an audit failure must not fail a request."""
-        try:
-            with self.db() as c:
-                c.execute('INSERT INTO audit_log(at,actor,action,detail) VALUES(?,?,?,?)',
-                          (utc(),str(actor)[:32],str(action)[:64],str(detail)[:500]))
-        except Exception:pass
-    def audit_tail(self,limit=50):
-        with self.db() as c:
-            rows=c.execute('SELECT at,actor,action,detail FROM audit_log ORDER BY id DESC LIMIT ?',
-                           (max(1,int(limit)),)).fetchall()
-        return [{'at':r[0],'actor':r[1],'action':r[2],'detail':r[3]} for r in rows]
-    # ---- refunds ----------------------------------------------------------
-    def account_by_customer(self,customer):
-        with self.db() as c:
-            r=c.execute('SELECT id FROM accounts WHERE stripe_customer_id=?',(customer,)).fetchone()
-        return r[0] if r else None
-    def refund_payment(self,account,month,amount,now=None):
-        """Reverse a recorded payment idempotently.
-
-        A refund is money going back, not a payment: it never unsuspends an account and
-        never deletes the row, so the month keeps a 'refunded' record that reconciliation
-        can still see. Re-delivered Stripe events hit the already_refunded branch.
-        """
-        now=now or utc()
-        with self.db() as c:
-            r=c.execute('SELECT status,amount FROM payments WHERE account=? AND month=?',(account,month)).fetchone()
-            if not r:
-                return {'action':'refund_without_payment','account':account,'month':month,'amount':amount}
-            if r[0]=='refunded':
-                return {'action':'already_refunded','account':account,'month':month,'amount':r[1]}
-            c.execute("UPDATE payments SET status='refunded', amount=?, recorded_at=? WHERE account=? AND month=?",
-                      (amount,now,account,month))
-        return {'action':'refunded','account':account,'month':month,'amount':amount}
-
     def record_payment(self,account,month,status,amount,now=None):
         # Recording only: no automatic reaction (e.g. auto-suspend on failure) is wired up.
         # Refund rules and any failure-triggered action are deliberately still manual.
         if status not in ('paid','failed'):raise Invalid('invalid payment status')
         with self.db() as c:
-            # Explicit check: the new foreign key also blocks this, but a raw IntegrityError
-            # would be reported as the unrelated "hub already provisioned" skip.
-            if not c.execute('SELECT 1 FROM accounts WHERE id=?',(account,)).fetchone():raise Invalid('unknown account')
             c.execute('''INSERT INTO payments(account,month,status,amount,recorded_at) VALUES(?,?,?,?,?)
                          ON CONFLICT(account,month) DO UPDATE SET status=excluded.status,amount=excluded.amount,recorded_at=excluded.recorded_at''',
                       (account,month,status,amount,now or utc()))
@@ -253,46 +127,6 @@ class Store:
         with self.db() as c:
             row=c.execute('SELECT * FROM payments WHERE account=? AND month=?',(account,month)).fetchone()
             return dict(row) if row else None
-    def account_ids(self):
-        with self.db() as c:return [r['id'] for r in c.execute('SELECT id FROM accounts ORDER BY id').fetchall()]
-    def latest_month(self):
-        with self.db() as c:
-            r=c.execute('SELECT month FROM months ORDER BY month DESC LIMIT 1').fetchone()
-        return r['month'] if r else None
-    def reconcile_month(self,month):
-        """Read-only: for every account, put the peak we observed against the payment we
-        recorded for one billing month, and say whether the two agree."""
-        with self.db() as c:
-            rows=c.execute("SELECT a.id AS account,m.peak,m.base,m.unit,p.status,p.amount "
-                           "FROM accounts a "
-                           "LEFT JOIN months m ON m.account=a.id AND m.month=? "
-                           "LEFT JOIN payments p ON p.account=a.id AND p.month=? "
-                           "ORDER BY a.id",(month,month)).fetchall()
-        out=[]
-        for r in rows:
-            # Compared in USD cents, against Stripe's own amount: only sites above the
-            # plan's included allowance are charged, so a peak inside the allowance
-            # expects the base price alone.
-            if r['peak'] is None:billable_sites=None;expected=None
-            else:billable_sites,expected=billing_amounts(r['base'],r['unit'],r['peak'],included_sites())
-            if r['peak'] is None and r['amount'] is None:state='no_observation'
-            elif r['amount'] is None:state='missing_payment'
-            elif r['status']!='paid':state='unpaid'
-            elif expected is not None and r['amount']!=expected:state='amount_mismatch'
-            else:state='ok'
-            out.append({'account':r['account'],'peak':r['peak'],'billable_sites':billable_sites,
-                        'expected_usd_cents':expected,'expected_yen':(None if expected is None else cents_to_yen(expected)),
-                        'recorded_status':r['status'],'recorded_usd_cents':r['amount'],'state':state})
-        return out
-    def record_reconciliation(self,started,mode,apply,accounts,recorded,detail,now=None):
-        """Audit trail: one row per reconcile run, so a monthly gap stays visible afterwards."""
-        with self.db() as c:
-            c.execute('INSERT INTO reconciliation_runs(started,finished,mode,apply,accounts,recorded,detail) VALUES(?,?,?,?,?,?,?)',
-                      (started,now or utc(),mode,1 if apply else 0,accounts,recorded,detail))
-    def reconciliation_runs(self,limit=20):
-        with self.db() as c:
-            rows=c.execute('SELECT * FROM reconciliation_runs ORDER BY id DESC LIMIT ?',(limit,)).fetchall()
-        return [dict(r) for r in rows]
     def issue_management_token(self,account,stripe_customer,now=None):
         # One live token per account (re-issuing replaces the previous one, so an old link
         # a customer forwarded or lost stops working once a new one is issued).
@@ -303,17 +137,6 @@ class Store:
                          ON CONFLICT(account) DO UPDATE SET token_hash=excluded.token_hash,stripe_customer=excluded.stripe_customer,created=excluded.created''',
                       (account,digest(token),stripe_customer,now or utc()))
         return token
-    def auth_manage_or_hub(self,c,token):
-        """Accept either the account's management token (the billing-link credential) or any
-        hub token belonging to that account (what the WordPress site itself stores). Returns
-        the account id. The hub-token path exists so the self-service screen can list, revoke
-        and issue hubs without the operator opening the Render shell; it can never reach
-        another account's rows because the hub row itself carries the account."""
-        if isinstance(token,str) and re.fullmatch('[a-f0-9]{64}',token):
-            row=c.execute('SELECT account FROM management_tokens WHERE token_hash=?',(digest(token),)).fetchone()
-            if row:return row['account']
-        h=self.auth(c,token)
-        return h['account']
     def auth_management(self,c,token):
         if not isinstance(token,str) or not re.fullmatch('[a-f0-9]{64}',token):raise Unauthorized()
         row=c.execute('SELECT * FROM management_tokens WHERE token_hash=?',(digest(token),)).fetchone()
@@ -365,37 +188,6 @@ class Store:
             row=c.execute('SELECT last_webhook_type,last_webhook_at FROM accounts WHERE id=?',(account,)).fetchone()
             if not row:raise Invalid('unknown account')
             return {'last_webhook_type':row['last_webhook_type'] or None,'last_webhook_at':row['last_webhook_at'] or None}
-    def stale_webhook_accounts(self,threshold_hours=48,now=None):
-        """Accounts whose last verified webhook is older than threshold_hours, or that never
-        received one. Lets the alert command notice a broken Stripe webhook before the next
-        invoice silently goes unrecorded."""
-        now=now or utc()
-        cut=(datetime.fromisoformat(now)-timedelta(hours=threshold_hours)).isoformat()
-        with self.db() as c:
-            rows=c.execute("SELECT id,last_webhook_type,last_webhook_at FROM accounts WHERE last_webhook_at='' OR last_webhook_at<? ORDER BY id",(cut,)).fetchall()
-            return [{'account':r['id'],'last_webhook_type':r['last_webhook_type'] or None,'last_webhook_at':r['last_webhook_at'] or None} for r in rows]
-    def list_hubs(self,account,now=None):
-        """Every hub of one account, for the WordPress self-service screen: site count,
-        last sync time, whether it is revoked, and whether it has gone stale (no snapshot
-        for two hours, the same threshold result() reports as stale_hubs)."""
-        now=now or utc()
-        cut=(datetime.fromisoformat(now)-timedelta(hours=2)).isoformat()
-        with self.db() as c:
-            rows=c.execute("SELECT h.id,h.sequence,h.updated,h.revoked,"
-                           "(SELECT COUNT(*) FROM sites s WHERE s.hub=h.id) AS sites "
-                           "FROM hubs h WHERE h.account=? ORDER BY h.id",(account,)).fetchall()
-            return [{'hub':r['id'],'sequence':r['sequence'],'updated':r['updated'] or None,
-                     'revoked':bool(r['revoked']),'revoked_at':r['revoked'] or None,
-                     'sites':r['sites'],
-                     'stale':(not r['revoked']) and ((not r['updated']) or r['updated']<cut)}
-                    for r in rows]
-    def revoke_owned(self,account,hub,now=None):
-        """Revoke a hub only when it belongs to this account. A management token must never
-        be able to disable another account's hub."""
-        with self.db() as c:
-            row=c.execute('SELECT account FROM hubs WHERE id=?',(hub,)).fetchone()
-            if not row or row['account']!=account:raise Invalid('unknown hub')
-        self.revoke(hub,now)
     def stripe_account_state(self,account):
         # subscription_id/customer_id on file for this account, if any -- used by the
         # existing-hub self-upgrade shim (see handler()) to re-check live Stripe status and
@@ -424,10 +216,24 @@ class Store:
         hub='hub-'+secrets.token_hex(8)
         token=self.provision(account,hub,acc['base'],acc['unit'],acc['anchor_day'])
         return hub,token
-    def provision(self,account,hub,base=None,unit=None,anchor_day=None,now=None):
-        # Defaults come from the environment so a Stripe price change never needs a code edit.
-        base=price_base_usd_cents() if base is None else base
-        unit=price_unit_usd_cents() if unit is None else unit
+    def rotate_hub_token(self,account,hub):
+        """Replace one hub credential without changing its accumulated usage.
+
+        The prior credential stops authenticating immediately. This is for a
+        lost WordPress-side credential, not a way to reveal an existing one.
+        """
+        if not isinstance(hub,str) or not re.fullmatch(r'[a-z0-9_-]{1,64}',hub):
+            raise Invalid('invalid hub ID')
+        token=secrets.token_hex(32)
+        with self.db() as c:
+            acc=c.execute('SELECT suspended FROM accounts WHERE id=?',(account,)).fetchone()
+            if not acc: raise Invalid('unknown account')
+            if acc['suspended']: raise Invalid('account is suspended; contact support to rotate a hub token')
+            row=c.execute('SELECT 1 FROM hubs WHERE id=? AND account=?',(hub,account)).fetchone()
+            if not row: raise Invalid('unknown hub for this account')
+            c.execute('UPDATE hubs SET token_hash=? WHERE id=? AND account=?',(digest(token),hub,account))
+        return token
+    def provision(self,account,hub,base=10000,unit=100,anchor_day=None,now=None):
         if not all(re.fullmatch(r'[a-z0-9_-]{1,64}',x) for x in (account,hub)):raise Invalid('invalid account or hub ID')
         if type(base) is not int or type(unit) is not int or min(base,unit)<0:raise Invalid('invalid pricing')
         now=now or utc()
@@ -481,31 +287,14 @@ class Store:
         m=c.execute('SELECT * FROM months WHERE account=? AND month=?',(h['account'],period)).fetchone()
         stale=c.execute("SELECT COUNT(*) FROM hubs WHERE account=? AND revoked='' AND (updated='' OR updated<?)",(h['account'],datetime.fromtimestamp(datetime.fromisoformat(now).timestamp()-7200,timezone.utc).isoformat())).fetchone()[0]
         cap=c.execute('SELECT spending_cap FROM accounts WHERE id=?',(h['account'],)).fetchone()['spending_cap']
-        # The charge is computed in USD cents -- what Stripe actually stores -- and yen is
-        # derived for display, so the two can never drift apart by an exchange rate.
-        included=included_sites()
-        billable_sites,estimate_cents=billing_amounts(m['base'],m['unit'],m['peak'],included)
-        base_yen,unit_yen=cents_to_yen(m['base']),cents_to_yen(m['unit'])
-        # Yen must follow the same basis as the charge: only the excess sites above the
-        # plan's allowance are billed, so multiplying the unit price by the whole peak
-        # (which the base price already covers up to `included`) would show a total the
-        # customer is never charged. The authoritative figures stay in USD cents.
-        estimate_yen=base_yen+unit_yen*billable_sites
+        estimate=m['base']+m['peak']*m['unit']
         current=self.count(c,h['account'])
         # Warning only: a cap never blocks new site registrations or usage (see README).
-        return dict(mode='pilot',month=period,current=current,peak=m['peak'],currency='usd',base_usd_cents=m['base'],unit_usd_cents=m['unit'],estimate_usd_cents=estimate_cents,billable_sites=billable_sites,included_sites=included,fx_rate_usd_jpy=usd_jpy_rate(),base_yen=base_yen,unit_yen=unit_yen,estimate_yen=estimate_yen,stale_hubs=stale,sequence=h['sequence'],observed_at=now,billable=False,spending_cap_yen=cap,over_spending_cap=bool(cap) and estimate_yen>cap,overage_sites=max(0,current-included))
+        return dict(mode='pilot',month=period,current=current,peak=m['peak'],base_yen=m['base'],unit_yen=m['unit'],estimate_yen=estimate,currency='jpy',stale_hubs=stale,sequence=h['sequence'],observed_at=now,billable=False,spending_cap_yen=cap,over_spending_cap=bool(cap) and estimate>cap,overage_sites=max(0,current-included_sites()))
     def status(self,token,now=None):
         now=now or utc()
         with self.db() as c:
-            h=self.auth(c,token)
-            # An authenticated read proves this hub is alive. When it had already gone stale
-            # (no snapshot for two hours) refresh the liveness stamp so the operator's
-            # "unsynced hub" warning clears. A hub that never contacts us stays stale, so the
-            # alarm still works; only a live hub is refreshed, and no snapshot is invented.
-            if not h['revoked'] and (not h['updated'] or h['updated']<datetime.fromtimestamp(datetime.fromisoformat(now).timestamp()-7200,timezone.utc).isoformat()):
-                c.execute('UPDATE hubs SET updated=? WHERE id=?',(now,h['id']))
-                h=c.execute('SELECT * FROM hubs WHERE id=?',(h['id'],)).fetchone()
-            return self.result(c,h,now)
+            h=self.auth(c,token);return self.result(c,h,now)
     def snapshot(self,token,data,now=None):
         now=now or utc()
         if not isinstance(data,dict) or set(data)!={'sequence','sites'}:raise Invalid('expected sequence and sites only')
@@ -539,7 +328,7 @@ class Store:
             unsynced=c.execute("SELECT COUNT(*) FROM hubs WHERE account=? AND revoked='' AND (updated='' OR updated<?)",(account,end)).fetchone()[0]
             grace_hours=(datetime.fromisoformat(now)-datetime.fromisoformat(end)).total_seconds()/3600
             if unsynced and grace_hours<72 and not force:raise Invalid(f'{unsynced} hub(s) have not reported since this period ended at {end}; wait until 72h after that, or pass force=True to accept the risk')
-            r=dict(row);_bill,_cents=billing_amounts(r['base'],r['unit'],r['peak'],included_sites());r.update(mode='pilot',currency='usd',base_usd_cents=r['base'],unit_usd_cents=r['unit'],estimate_usd_cents=_cents,billable_sites=_bill,included_sites=included_sites(),base_yen=cents_to_yen(r['base']),unit_yen=cents_to_yen(r['unit']),estimate_yen=cents_to_yen(r['base'])+cents_to_yen(r['unit'])*_bill,amount_yen=cents_to_yen(r['base'])+cents_to_yen(r['unit'])*_bill,billable=False,unsynced_hubs=unsynced)
+            r=dict(row);r.update(mode='pilot',currency='jpy',amount_yen=r['base']+r['peak']*r['unit'],billable=False,unsynced_hubs=unsynced)
             return r
 
 def _base_subscription_item_id(items):
@@ -560,25 +349,16 @@ def handle_stripe_event(store,event):
     just recorded (see Store.record_stripe_event). Requires 'account' (and for provisioning,
     'hub') in the Stripe object's metadata -- set this on the Checkout Session, using
     subscription_data.metadata so it carries onto the subscription for later events too.
-    POST /v1/signup creates that Checkout Session, and create_checkout_session() in
-    stripe_draft.py sets metadata[account]/[hub]/[base]/[unit] plus the same keys under
-    subscription_data.metadata, so the events this function receives already carry them."""
+    Checkout Session creation itself is not implemented yet, so nothing sets this metadata
+    yet; this function is the receiving half, ready for when it is."""
     etype=event.get('type');obj=(event.get('data') or {}).get('object') or {}
-    store.audit('stripe',str(etype),str(obj.get('id') or '')[:64])
     meta=obj.get('metadata') or {}
-    if etype in ('invoice.paid','invoice.payment_failed'):
-        # A subscription invoice normally carries no metadata of its own: Stripe copies the
-        # subscription's metadata onto invoice.subscription_details. Read both (the invoice's
-        # own keys win) so a Checkout-created subscription still resolves account/month instead
-        # of being silently skipped while billing runs live.
-        sub_meta=(obj.get('subscription_details') or {}).get('metadata') or {}
-        meta={**sub_meta,**{k:v for k,v in meta.items() if v}}
     try:
         if etype=='checkout.session.completed':
             account=meta.get('account');hub=meta.get('hub')
             if not account or not hub:return {'action':'skipped','reason':'missing account/hub metadata'}
-            base=int(meta['base']) if 'base' in meta else price_base_usd_cents()
-            unit=int(meta['unit']) if 'unit' in meta else price_unit_usd_cents()
+            base=int(meta['base']) if 'base' in meta else 10000
+            unit=int(meta['unit']) if 'unit' in meta else 100
             token=store.provision(account,hub,base,unit)
             # A management token doubles as this account's proof-of-identity for the manage
             # link, without building a login system: whoever holds the (random, unguessable)
@@ -637,33 +417,9 @@ def handle_stripe_event(store,event):
             store.suspend(account,reason='subscription_canceled')
             store.record_webhook(account,etype)
             return {'action':'suspended','account':account}
-        if etype=='charge.refunded':
-            # A refund reverses money, not usage: the month's observed peak still stands,
-            # only the recorded payment is marked refunded (idempotently).
-            charge=obj
-            account=meta.get('account') or store.account_by_customer(charge.get('customer'))
-            month=None
-            invoice_id=charge.get('invoice')
-            if invoice_id:
-                key=stripe_secret_key()
-                if key:
-                    try:
-                        inv=stripe_get('invoices/'+invoice_id,key)
-                        sub_meta=(inv.get('subscription_details') or {}).get('metadata') or {}
-                        merged={**sub_meta,**{k:v for k,v in (inv.get('metadata') or {}).items() if v}}
-                        resolved,month,_why=_resolve_invoice_period(store,inv,merged)
-                        account=account or resolved
-                    except Exception:pass
-            if not account or not month:
-                return {'action':'skipped','reason':'refund could not be mapped to a recorded payment',
-                        'event':etype,'charge':charge.get('id')}
-            amount=charge.get('amount_refunded') or charge.get('amount')
-            result=store.refund_payment(account,month,amount)
-            store.record_webhook(account,etype)
-            return result
         if etype in ('invoice.paid','invoice.payment_failed'):
-            account,month,why=_resolve_invoice_period(store,obj,meta)
-            if not account or not month:return {'action':'skipped','reason':why or 'missing account/month metadata','event':etype,'invoice':obj.get('id'),'customer':obj.get('customer'),'metadata_keys':sorted(meta.keys())}
+            account=meta.get('account');month=meta.get('month')
+            if not account or not month:return {'action':'skipped','reason':'missing account/month metadata'}
             status='paid' if etype=='invoice.paid' else 'failed'
             amount=obj.get('amount_paid') if status=='paid' else obj.get('amount_due')
             store.record_payment(account,month,status,amount)
@@ -690,51 +446,6 @@ def stripe_live_enabled():
     """An explicit second switch prevents accidental live charging after a key is pasted."""
     return os.environ.get('STRIPE_LIVE_ENABLED','')=='1'
 
-def stripe_signup_available():
-    """True only when /v1/signup can start a Checkout Session without mixing key modes.
-
-    A live key with STRIPE_LIVE_ENABLED off raises inside create_checkout_session(),
-    so the page is withheld instead of being shown and then failing on the button.
-    """
-    key=stripe_secret_key()
-    if key.startswith('sk_live_'):return stripe_live_enabled()
-    if key.startswith('sk_test_'):return True
-    return False
-
-def _signup_price_text():
-    """Price line for the live signup screen, derived from the same env values the
-    billing maths uses. Falls back to a neutral sentence rather than showing a wrong
-    number if those values are unreadable."""
-    try:
-        base=int(os.environ.get('PRICE_BASE_USD_CENTS','2900'))
-        unit=int(os.environ.get('PRICE_UNIT_USD_CENTS','300'))
-        inc=included_sites()
-        return ('月額 $%d.%02d（%dサイトまで）／%dサイト目以降は1サイトにつき月額 $%d.%02d'
-                % (base//100,base%100,inc,inc+1,unit//100,unit%100))
-    except Exception:
-        return '料金は Stripe の請求内容に従います。'
-
-def signup_page_html():
-    """Render the signup screen for the mode the button will actually use.
-
-    The page used to hard-code 'テストモード ... 実際の課金は発生しません' even while
-    live billing was enabled, so a real subscription could be started from a screen
-    that promised no charge. The wording now follows the key in use plus
-    STRIPE_LIVE_ENABLED, so the page can never describe a different mode than the one
-    the click starts.
-    """
-    if stripe_secret_key().startswith('sk_live_') and stripe_live_enabled():
-        suffix=''
-        notice='これは本番のお申し込み画面です。ボタンを押して決済を完了すると、実際に課金されます。'
-        price=_signup_price_text()
-    else:
-        suffix='(テスト)'
-        notice='これはテストモードのお申し込み画面です。実際の課金は発生しません。'
-        price='テスト用の鍵を使用します。実際の請求は作成されません。'
-    return (SIGNUP_PAGE_HTML.replace('__TITLE_SUFFIX__',suffix)
-            .replace('__NOTICE__',notice).replace('__PRICE__',price))
-
-
 def stripe_mode(key):
     if key.startswith('sk_live_') and stripe_live_enabled():return 'live'
     if key.startswith('sk_test_'):return 'test'
@@ -747,86 +458,6 @@ def included_sites():
     if not 0<=value<=100000:return (_ for _ in ()).throw(ValueError('STRIPE_INCLUDED_SITES is out of range'))
     return value
 
-def price_base_usd_cents():
-    """Authoritative base price, in USD cents (the $29.00 plan -> 2900).
-
-    USD cents -- not yen -- is the source of truth: it is exactly the integer Stripe
-    stores in a price's unit_amount, so a charge can be compared with an invoice without
-    ever going through an exchange rate. Yen exists only for display (see cents_to_yen).
-    """
-    raw=os.environ.get('PRICE_BASE_USD_CENTS','2900')
-    try:value=int(raw)
-    except (TypeError,ValueError):raise ValueError('PRICE_BASE_USD_CENTS must be an integer')
-    if value<0:raise ValueError('PRICE_BASE_USD_CENTS must not be negative')
-    return value
-
-def price_unit_usd_cents():
-    """Authoritative per-extra-site price, in USD cents ($3.00 -> 300)."""
-    raw=os.environ.get('PRICE_UNIT_USD_CENTS','300')
-    try:value=int(raw)
-    except (TypeError,ValueError):raise ValueError('PRICE_UNIT_USD_CENTS must be an integer')
-    if value<0:raise ValueError('PRICE_UNIT_USD_CENTS must not be negative')
-    return value
-
-def usd_jpy_rate():
-    """Yen per USD, for display only -- never used to compute or reconcile a charge.
-
-    The default 157.83 is the rate implied by Stripe's own dashboard, which shows this
-    plan's MRR as 4,577 yen for $29.00. Pin it with USD_JPY_RATE when a fixed display
-    rate matters more than following Stripe.
-    """
-    raw=os.environ.get('USD_JPY_RATE','157.83')
-    try:value=float(raw)
-    except (TypeError,ValueError):raise ValueError('USD_JPY_RATE must be a number')
-    if value<=0:raise ValueError('USD_JPY_RATE must be positive')
-    return value
-
-def cents_to_yen(cents):
-    """Display conversion. Rounded once, to the whole yen: JPY has no minor unit."""
-    return int(round(cents*usd_jpy_rate()/100.0))
-
-def usd_text(cents):
-    """Human-readable USD for a cent amount ('$29.00'), or an em dash when there is none.
-
-    Reports print money through this so a USD cent value can never be labelled as yen.
-    """
-    if cents is None:return '—'
-    return '$%.2f'%(cents/100.0)
-
-def yen_text(cents):
-    """The same amount with its yen reference appended, for a report line."""
-    if cents is None:return '—'
-    return '%s（約%s円）'%(usd_text(cents),format(cents_to_yen(cents),','))
-
-def billing_amounts(base_cents,unit_cents,peak,included):
-    """The one place a charge is computed, in USD cents.
-
-    Sites inside the plan's included allowance are already covered by the base price, so
-    only the excess is charged per site -- the same shape as the separate per-unit Stripe
-    price item. Returns (billable_sites, estimate_cents).
-    """
-    billable=max(0,peak-included)
-    return billable,base_cents+unit_cents*billable
-
-def migrate_pricing_to_usd_cents(c):
-    """One-time re-basing of the pricing columns from yen to USD cents.
-
-    accounts.base/unit used to hold yen (10000/100). They now hold USD cents (2900/300),
-    so a charge is compared with Stripe's own unit_amount and a month's snapshot keeps
-    the price that applied when it was observed. Only rows still carrying the old yen
-    defaults are re-based; any other value is left alone and reported, so a hand-set
-    price is never silently rewritten. schema_flags makes it run exactly once.
-    """
-    c.execute('CREATE TABLE IF NOT EXISTS schema_flags(name TEXT PRIMARY KEY, done TEXT NOT NULL)')
-    if c.execute("SELECT 1 FROM schema_flags WHERE name='pricing_usd_cents'").fetchone():return
-    base,unit=price_base_usd_cents(),price_unit_usd_cents()
-    c.execute('UPDATE accounts SET base=?,unit=? WHERE base=10000 AND unit=100',(base,unit))
-    c.execute('UPDATE months SET base=?,unit=? WHERE base=10000 AND unit=100',(base,unit))
-    left=c.execute('SELECT COUNT(*) FROM accounts WHERE base<>? OR unit<>?',(base,unit)).fetchone()[0]
-    c.execute("INSERT INTO schema_flags(name,done) VALUES('pricing_usd_cents',?)",(utc(),))
-    if left:print('[warn] %d account(s) still carry a non-USD price; review before billing'%left)
-
-
 def with_billing_contract(usage):
     """Return the public billing state without exposing Stripe identifiers or secrets."""
     key=stripe_secret_key()
@@ -835,37 +466,23 @@ def with_billing_contract(usage):
     result.update(mode='live' if live else 'test',billable=live,included_sites=included_sites(),overage_sites=max(0,usage['current']-included_sites()))
     return result
 
-def sync_stripe_meter(store,account,period,current,sequence,raise_on_error=False):
-    """Report the *current* extra-site count to the Stripe Billing Meter.
+def sync_stripe_meter(store,account,period,current,sequence):
+    """Best-effort report of the *current* extra-site count to the Billing Meter.
 
-    The Dashboard meter is configured with ``last`` aggregation, so the value must be the
-    current number of excess sites -- never a running total or this period's peak. Replaying
-    the same snapshot uses a stable identifier, so a retry cannot add another site's worth of
-    usage. Reporting 0 is meaningful: with ``last`` aggregation it clears a previous charge
-    after sites are removed again.
-
-    Best-effort by default: a Stripe outage never fails the hub's snapshot response, and the
-    next snapshot retries. When ``raise_on_error`` is true the caller is about to admit a site
-    that only exists above the included allowance, so the error propagates instead -- hiding
-    it would let that extra site run without a matching charge.
+    The Dashboard meter is configured with ``last`` aggregation.  Replaying the same
+    snapshot uses a stable identifier, so a retry cannot add another site's worth of usage.
+    A Stripe outage never makes WordPress synchronization fail; the next snapshot retries.
     """
     key=stripe_secret_key();event_name=os.environ.get('STRIPE_METER_EVENT_NAME','')
-    if not (key and event_name):
-        if raise_on_error:raise Invalid('Stripe meter billing is not configured')
-        return {'reported':False,'reason':'not_configured'}
+    if not (key and event_name):return
     state=store.stripe_account_state(account);customer=state['customer_id']
-    if not customer:
-        if raise_on_error:raise Invalid('no Stripe customer recorded for this account yet')
-        return {'reported':False,'reason':'no_customer'}
+    if not customer:return
     overage=max(0,current-included_sites())
     identifier='arai_'+digest(account+'|'+period+'|'+str(sequence)+'|'+str(overage))[:48]
     try:
         if stripe_live_enabled():record_meter_event(event_name,customer,overage,key,identifier,allow_live=True)
         else:record_meter_event(event_name,customer,overage,key,identifier)
-    except Exception:
-        if raise_on_error:raise
-        return {'reported':False,'reason':'stripe_error'}
-    return {'reported':True,'overage_sites':overage,'identifier':identifier}
+    except Exception:pass
 
 def sync_stripe_overage_quantity(store,account,current):
     """Synchronise only sites 11+ to Stripe's separate $3 subscription item.
@@ -918,54 +535,17 @@ def overage_price_info(key):
     _overage_price_cache[price_id]=(time.time(),info)
     return info
 
-def redact_path(path):
-    """Drop the query string before it reaches the audit trail.
-
-    /v1/manage/portal carries the management token in its query string, so logging
-    self.path verbatim could persist a live credential in audit_log (which the audit
-    endpoint then hands back). Only the route is recorded.
-    """
-    return str(path).split('?')[0]
-
-
-_RATE_HITS={};_RATE_LOCK=threading.Lock()
-
-def rate_limited(key,limit=5,window=600):
-    """Sliding-window limiter shared by every endpoint.
-
-    In-memory and per-process: it resets on restart, which is adequate at pilot scale.
-    A multi-instance deployment would need a shared store instead. Every refusal is
-    written to the audit log by the caller.
-    """
-    now=time.time()
-    with _RATE_LOCK:
-        hits=[t for t in _RATE_HITS.get(key,()) if now-t<window]
-        hits.append(now);_RATE_HITS[key]=hits
-        if len(_RATE_HITS)>4096:
-            for k in list(_RATE_HITS)[:1024]:
-                if k!=key:_RATE_HITS.pop(k,None)
-        return len(hits)>limit
-
-def client_key(headers,addr):
-    """Identify the real caller behind the platform edge.
-
-    The socket peer is the edge proxy, not the client: a 250-request burst from a
-    single browser arrived as 250 different peer addresses, so every request landed
-    in its own rate-limit bucket and the limiter never fired. Cloudflare fronts this
-    host and overwrites CF-Connecting-IP with the true client address, so prefer it;
-    X-Real-IP and the RIGHT-most X-Forwarded-For entry are fallbacks, then the socket
-    peer. The LEFT-most X-Forwarded-For entry is ignored on purpose: a client can
-    prepend an arbitrary value there.
-    """
-    for h in ('CF-Connecting-IP','X-Real-IP'):
-        v=(headers.get(h) or '').strip()
-        if v:return v
-    parts=[p.strip() for p in (headers.get('X-Forwarded-For') or '').split(',') if p.strip()]
-    if parts:return parts[-1]
-    return addr
-
-
 def handler(store):
+    # Shared across requests/threads: a simple in-memory rate limit for the public signup
+    # endpoint. Resets on restart and is per-process (fine at pilot scale; a real multi-
+    # instance deployment would need a shared store instead).
+    signup_hits={};signup_lock=threading.Lock()
+    def rate_limited(ip,limit=5,window=600):
+        now=time.time()
+        with signup_lock:
+            hits=[t for t in signup_hits.get(ip,()) if now-t<window]
+            hits.append(now);signup_hits[ip]=hits
+            return len(hits)>limit
     class Handler(BaseHTTPRequestHandler):
         def setup(self):
             super().setup();self.connection.settimeout(10)
@@ -974,25 +554,16 @@ def handler(store):
             body=json.dumps(data,separators=(',',':')).encode();self.send_response(code)
             self.send_header('Content-Type','application/json');self.send_header('Cache-Control','no-store');self.send_header('Content-Length',str(len(body)));self.end_headers();self.wfile.write(body)
         def dispatch(self):
-            if rate_limited('ip:'+client_key(self.headers,self.client_address[0]),240,60):
-                store.audit('http','rate_limited',redact_path(self.path))
-                return self.reply(429,{'error':'rate_limited'})
             try:
                 auth=self.headers.get('Authorization','');token=auth[7:] if auth.startswith('Bearer ') else ''
                 if self.command=='GET' and self.path=='/v1/usage': r=with_billing_contract(store.status(token))
                 elif self.command=='GET' and self.path=='/signup':
-                    # A minimal purchase screen: it only calls the existing POST
+                    # A minimal test-purchase screen: it only calls the existing POST
                     # /v1/signup and redirects to the Checkout URL that returns. Same
                     # configuration gate as /v1/signup, so an unfinished deployment doesn't
                     # advertise a half-built signup flow.
-                    # It is additionally gated on the mode the button will actually use:
-                    # with a live key and STRIPE_LIVE_ENABLED=1 the click starts a real
-                    # subscription, so the screen must not promise that no charge occurs
-                    # (it used to hard-code the test wording), and it must not be shown at
-                    # all when the key mode and the live switch disagree.
                     if not all((os.environ.get('STRIPE_PRICE_ID'),os.environ.get('SIGNUP_SUCCESS_URL'),os.environ.get('SIGNUP_CANCEL_URL'),stripe_secret_key())):return self.reply(404,{'error':'not_found'})
-                    if not stripe_signup_available():return self.reply(404,{'error':'not_found'})
-                    body=signup_page_html().encode('utf-8')
+                    body=SIGNUP_PAGE_HTML.encode('utf-8')
                     self.send_response(200);self.send_header('Content-Type','text/html; charset=utf-8');self.send_header('Cache-Control','no-store');self.send_header('Content-Length',str(len(body)));self.end_headers();self.wfile.write(body);return
                 elif self.command=='GET' and self.path.startswith('/v1/manage/portal'):
                     # A GET (not POST) so this works as a plain link clicked from email.
@@ -1005,46 +576,32 @@ def handler(store):
                     with store.db() as c:row=store.auth_management(c,mtoken)
                     session=create_portal_session(row['stripe_customer'],return_url,key,allow_live=stripe_live_enabled())
                     self.send_response(302);self.send_header('Location',session['url']);self.send_header('Content-Length','0');self.end_headers();return
-                elif self.command=='GET' and self.path=='/v1/manage/hubs':
-                    # Read-only list for the self-service screen: which hubs exist, how many
-                    # sites each reports, and which ones have stopped syncing.
-                    with store.db() as c:row={'account':store.auth_manage_or_hub(c,token)}
-                    r={'account':row['account'],'hubs':store.list_hubs(row['account'])}
-                elif self.command=='GET' and self.path.split('?')[0]=='/v1/manage/audit':
-                    # Read-only tail of the audit trail (auth refusals, sequence conflicts,
-                    # rate-limit hits, Stripe events). The trail is global -- audit_log has no
-                    # account column -- so this sits behind the same admin gate as /v1/admin/*:
-                    # a per-customer management token must never read other accounts' rows.
-                    admin=os.environ.get('ADMIN_TOKEN','')
-                    given=self.headers.get('X-Admin-Token','')
-                    if not admin or not hmac.compare_digest(given,admin):raise Unauthorized()
-                    q=parse_qs(urlparse(self.path).query)
-                    try:limit=int((q.get('limit') or ['50'])[0])
-                    except (TypeError,ValueError):raise Invalid('invalid limit')
-                    if not 1<=limit<=200:raise Invalid('invalid limit')
-                    entries=store.audit_tail(limit)
-                    r={'count':len(entries),'entries':entries}
-                elif self.command=='POST' and self.path=='/v1/manage/hubs/revoke':
-                    # Same management-token auth. Revoking is ownership-checked (revoke_owned)
-                    # and only stops future counting; already observed peaks are not rewritten.
-                    with store.db() as c:row={'account':store.auth_manage_or_hub(c,token)}
-                    size=int(self.headers.get('Content-Length','0'))
-                    if not 0<size<=1000:raise Invalid('payload size')
-                    body=json.loads(self.rfile.read(size))
-                    hub=body.get('hub') if isinstance(body,dict) else None
-                    if not isinstance(hub,str) or not re.fullmatch(r'[a-z0-9_-]{1,64}',hub):raise Invalid('invalid hub id')
-                    store.revoke_owned(row['account'],hub)
-                    r={'account':row['account'],'hub':hub,'revoked':True}
                 elif self.command=='POST' and self.path=='/v1/manage/hubs':
                     # Same management-token auth as the portal link, via the normal
                     # Authorization header this time since this is a plain JSON API call,
                     # not a link meant to be clicked directly.
-                    with store.db() as c:row={'account':store.auth_manage_or_hub(c,token)}
+                    with store.db() as c:row=store.auth_management(c,token)
                     hub,hub_token=store.issue_additional_hub(row['account'])
                     r={'hub':hub,'hub_token':hub_token}
+                elif self.command=='POST' and self.path=='/v1/hubs/issue':
+                    # A connected hub may onboard one additional WordPress site for the
+                    # same account.  This is the recovery path when the original
+                    # management email was not delivered: it never reveals or changes
+                    # an existing hub credential, and the new credential is returned
+                    # exactly once to the already-authenticated control hub.
+                    with store.db() as c:h=store.auth(c,token)
+                    hub,hub_token=store.issue_additional_hub(h['account'])
+                    r={'hub':hub,'hub_token':hub_token}
+                elif self.command=='POST' and re.fullmatch(r'/v1/manage/hubs/[a-z0-9_-]{1,64}/rotate',self.path):
+                    # A management token can replace a lost hub credential, but
+                    # can never read the old one back. The replacement is shown
+                    # only in this response and invalidates the old credential.
+                    with store.db() as c: row=store.auth_management(c,token)
+                    hub=self.path.rsplit('/',2)[1]
+                    r={'hub':hub,'hub_token':store.rotate_hub_token(row['account'],hub)}
                 elif self.command=='POST' and self.path=='/v1/manage/spending-cap':
                     # Self-service budget alert: warning-only, never blocks usage (see result()).
-                    with store.db() as c:row={'account':store.auth_manage_or_hub(c,token)}
+                    with store.db() as c:row=store.auth_management(c,token)
                     size=int(self.headers.get('Content-Length','0'))
                     if not 0<size<=1000:raise Invalid('payload size')
                     body=json.loads(self.rfile.read(size))
@@ -1057,9 +614,9 @@ def handler(store):
                     size=int(self.headers.get('Content-Length','0'))
                     if not 0<size<=8000000:raise Invalid('payload size')
                     r=store.snapshot(token,json.loads(self.rfile.read(size)))
-                    # The $3 overage is billed from Billing Meter events: a metered price
-                    # never carries a quantity, so nothing is written to a subscription item.
-                    sync_stripe_meter(store,h['account'],r['month'],r['current'],r['sequence'])
+                    # The base $29 item and the $3 extra-site item are deliberately separate.
+                    if os.environ.get('STRIPE_OVERAGE_PRICE_ID'):r['billing_sync']=sync_stripe_overage_quantity(store,h['account'],r['current'])
+                    else:sync_stripe_meter(store,h['account'],r['month'],r['current'],r['sequence'])
                     r=with_billing_contract(r)
                 elif self.command=='POST' and self.path=='/v1/registration-check':
                     # Called before the WordPress plugin persists a new site. It makes the
@@ -1075,11 +632,7 @@ def handler(store):
                     with store.db() as c:
                         already=c.execute('SELECT 1 FROM sites WHERE hub=? AND site=?',(h['id'],site)).fetchone() is not None
                         current=store.count(c,h['account'])+(0 if already else 1)
-                        usage=store.result(c,h,utc())
-                    # The eleventh and later site must be billable before it is admitted:
-                    # unlike the snapshot path this raises, so a failed Meter report refuses
-                    # the registration instead of letting an extra site run uncharged.
-                    billing=sync_stripe_meter(store,h['account'],usage['month'],current,usage['sequence'],raise_on_error=True)
+                    billing=sync_stripe_overage_quantity(store,h['account'],current)
                     r={'allowed':True,'current':current,'included_sites':included_sites(),'billing_sync':billing}
                 elif self.command=='POST' and self.path=='/v1/stripe/test-checkout':
                     # Compatibility shim for an already-connected hub upgrading itself to a
@@ -1161,7 +714,7 @@ def handler(store):
                     if not 0<size<=4000:raise Invalid('payload size')
                     body=json.loads(self.rfile.read(size))
                     if not isinstance(body,dict):raise Invalid('expected an object')
-                    r={'hub_token':store.provision(body.get('account'),body.get('hub'),int(body.get('base',price_base_usd_cents())),int(body.get('unit',price_unit_usd_cents())),(int(body['anchor_day']) if 'anchor_day' in body else None)),'mode':'pilot'}
+                    r={'hub_token':store.provision(body.get('account'),body.get('hub'),int(body.get('base',10000)),int(body.get('unit',100)),(int(body['anchor_day']) if 'anchor_day' in body else None)),'mode':'pilot'}
                 elif self.command=='POST' and self.path=='/v1/admin/revoke':
                     # Same admin gate as provision; the mirror-image operation for ending a hub's access.
                     admin=os.environ.get('ADMIN_TOKEN','')
@@ -1204,7 +757,7 @@ def handler(store):
                     price_id=os.environ.get('STRIPE_PRICE_ID','');success_url=os.environ.get('SIGNUP_SUCCESS_URL','')
                     cancel_url=os.environ.get('SIGNUP_CANCEL_URL','');key=stripe_secret_key()
                     if not (price_id and success_url and cancel_url and key):return self.reply(404,{'error':'not_found'})
-                    if rate_limited(client_key(self.headers,self.client_address[0])):store.audit('http','rate_limited',redact_path(self.path));return self.reply(429,{'error':'rate_limited'})
+                    if rate_limited(self.client_address[0]):return self.reply(429,{'error':'rate_limited'})
                     size=int(self.headers.get('Content-Length','0'))
                     if not 0<=size<=4000:raise Invalid('payload size')
                     body=json.loads(self.rfile.read(size)) if size else {}
@@ -1214,77 +767,19 @@ def handler(store):
                     # account/hub are never taken from the request: random IDs prevent
                     # guessing or colliding with an existing customer.
                     account='acct-'+secrets.token_hex(8);hub='hub-'+secrets.token_hex(8)
-                    base=int(os.environ.get('SIGNUP_BASE',str(price_base_usd_cents())));unit=int(os.environ.get('SIGNUP_UNIT',str(price_unit_usd_cents())))
+                    base=int(os.environ.get('SIGNUP_BASE','10000'));unit=int(os.environ.get('SIGNUP_UNIT','100'))
                     session=create_checkout_session(account,hub,price_id,success_url,cancel_url,key,customer_email=email,base=base,unit=unit,allow_live=stripe_live_enabled())
                     r={'url':session['url']}
                 else:return self.reply(404,{'error':'not_found'})
                 self.reply(200,r)
-            except Unauthorized:
-                store.audit('http','unauthorized',redact_path(self.path));self.reply(401,{'error':'unauthorized'})
-            except Conflict:
-                store.audit('http','sequence_conflict',redact_path(self.path));self.reply(409,{'error':'sequence_conflict'})
-            except (Invalid,ValueError,UnicodeError) as exc:
-                store.audit('http','invalid_request',redact_path(self.path)+' '+str(exc)[:80]);self.reply(400,{'error':'invalid_request'})
-            except Exception as exc:
-                store.audit('http','unavailable',redact_path(self.path)+' '+str(exc)[:80]);self.reply(503,{'error':'temporarily_unavailable'})
+            except Unauthorized:self.reply(401,{'error':'unauthorized'})
+            except Conflict:self.reply(409,{'error':'sequence_conflict'})
+            except (Invalid,ValueError,UnicodeError):self.reply(400,{'error':'invalid_request'})
+            except Exception:self.reply(503,{'error':'temporarily_unavailable'})
         def do_GET(self):self.dispatch()
         def do_POST(self):self.dispatch()
     return Handler
 
-def alert_loop(store,to_addr,threshold_hours=48,interval_hours=6,sleep=time.sleep):
-    """Background webhook-freshness watchdog: emails when an account has not received a
-    verified Stripe webhook for threshold_hours hours. Runs inside the web service so it can
-    read the same SQLite file (a separate Render Cron Job cannot mount this service's disk).
-    Best-effort: every failure is swallowed so monitoring can never take the API down."""
-    while True:
-        try:
-            stale=store.stale_webhook_accounts(threshold_hours)
-            if stale:
-                body=('中央サーバーのStripe Webhookが%d時間以上受信されていません。\n'
-                      '契約・課金の反映が止まっている可能性があります。\n\n'%threshold_hours)
-                body+='\n'.join('・%s 最終受信: %s (%s)'%(x['account'],x['last_webhook_at'] or 'なし',x['last_webhook_type'] or '-') for x in stale)+'\n'
-                mailer.send(to_addr,'[AutoRepair中央] Webhook未受信の警告',body)
-        except Exception:pass
-        sleep(max(60.0,float(interval_hours)*3600.0))
-def reconcile_loop(store,to_addr,day=5,interval_hours=6,from_stripe=False,sleep=time.sleep,now_fn=None):
-    """Monthly billing reconciliation, run inside the web service for the same reason as
-    alert_loop: a separate Render Cron Job cannot mount this service's disk. Once per calendar
-    month, on or after `day`, compare observed peaks with recorded payments and email the
-    result. Writes only when from_stripe is on, and then only through record_payment().
-    Best-effort: every failure is swallowed so monitoring can never take the API down."""
-    now_fn=now_fn or utc
-    while True:
-        try:
-            now=now_fn();stamp=now[:7]
-            done=any(r['mode']=='monthly' and (r['started'] or '').startswith(stamp)
-                     for r in store.reconciliation_runs(50))
-            if not done and int(now[8:10])>=day:
-                month=store.latest_month()
-                rows=store.reconcile_month(month) if month else []
-                recorded=0;note=''
-                if from_stripe:
-                    key=os.environ.get('STRIPE_SECRET_KEY','')
-                    if not key:note='\n(Stripe照合はスキップ: STRIPE_SECRET_KEY 未設定)\n'
-                    else:
-                        results=[]
-                        for acct in store.account_ids():
-                            try:results.append(backfill_account(store,acct,key,apply=True,now=now))
-                            except Exception as exc:results.append({'account':acct,'skipped':True,'reason':'error: '+str(exc),'actions':[]})
-                        recorded=sum(1 for r in results for x in (r.get('actions') or []) if x.get('action')=='recorded')
-                        note='\nStripe照合で記録した件数: %d\n'%recorded
-                        rows=store.reconcile_month(month) if month else rows
-                bad=[r for r in rows if r['state'] in ('missing_payment','amount_mismatch','unpaid')]
-                body='[AutoRepair中央] 月次突合レポート (%s)\n\n'%stamp
-                body+='対象月: %s\n'%(month or '観測なし')
-                body+=note+'\n'
-                body+='\n'.join('・%s 観測peak=%s 請求予定=%s 記録=%s(%s) 判定=%s'%(
-                        r['account'],r['peak'],yen_text(r['expected_usd_cents']),yen_text(r['recorded_usd_cents']),r['recorded_status'],r['state']) for r in rows)
-                body+='\n\n要確認: %d件\n'%len(bad)
-                store.record_reconciliation(now,'monthly',bool(from_stripe),len(rows),recorded,
-                                            json.dumps(rows,ensure_ascii=False),now=now)
-                mailer.send(to_addr,'[AutoRepair中央] 月次突合レポート (%s)'%stamp,body)
-        except Exception:pass
-        sleep(max(60.0,float(interval_hours)*3600.0))
 if __name__=='__main__':
     p=argparse.ArgumentParser();p.add_argument('--db',default=os.environ.get('AAIHB_DB','usage.sqlite3'));sub=p.add_subparsers(dest='command',required=True)
     s=sub.add_parser('serve')
@@ -1292,18 +787,11 @@ if __name__=='__main__':
     # platform's own TLS-terminating edge proxy, so that must be opted into.
     s.add_argument('--host',default=os.environ.get('AAIHB_HOST','127.0.0.1'))
     s.add_argument('--port',type=int,default=int(os.environ.get('PORT',os.environ.get('AAIHB_PORT','8787'))))
-    s=sub.add_parser('provision');s.add_argument('account');s.add_argument('hub');s.add_argument('--base',type=int,default=None);s.add_argument('--unit',type=int,default=None);s.add_argument('--anchor-day',type=int,default=None,help='billing day of month (1-28); defaults to the day this account is first provisioned')
+    s=sub.add_parser('provision');s.add_argument('account');s.add_argument('hub');s.add_argument('--base',type=int,default=10000);s.add_argument('--unit',type=int,default=100);s.add_argument('--anchor-day',type=int,default=None,help='billing day of month (1-28); defaults to the day this account is first provisioned')
     s=sub.add_parser('export');s.add_argument('account');s.add_argument('period',help='billing period start date (YYYY-MM-DD), as shown in observation results');s.add_argument('--force',action='store_true',help='export even if hubs have not reported since the period ended and the 72h grace window has not passed')
     s=sub.add_parser('revoke');s.add_argument('hub',help='hub id to permanently deny further sync/status requests from; its already-recorded peaks are unaffected')
     s=sub.add_parser('suspend');s.add_argument('account',help='freeze every hub under this account (e.g. non-payment); site counts are kept as-is, only new sync/status requests are denied')
     s=sub.add_parser('unsuspend');s.add_argument('account')
-    s=sub.add_parser('alert');s.add_argument('--hours',type=int,default=48,help='flag accounts whose last verified webhook is older than this many hours');s.add_argument('--to',default=os.environ.get('ALERT_TO',''),help='recipient address; defaults to ALERT_TO');s.add_argument('--dry-run',action='store_true',help='report only, send no email')
-    s=sub.add_parser('reconcile',help='compare observed peaks with recorded payments; --from-stripe reads paid invoices and backfills what a missed webhook dropped')
-    s.add_argument('--month',help='billing month to compare (YYYY-MM-DD); defaults to the newest month we have observed')
-    s.add_argument('--from-stripe',action='store_true',help="read each account's paid invoices from Stripe and backfill missing payments")
-    s.add_argument('--apply',action='store_true',help='with --from-stripe, actually record the missing payments (default: report only, nothing is written)')
-    s.add_argument('--account',help='limit the Stripe backfill to one account id')
-    s.add_argument('--notify',action='store_true',help='also email this report to RECONCILE_TO (falls back to ALERT_TO)')
     s=sub.add_parser('backup');s.add_argument('target',help='path to write a consistent point-in-time copy to; safe to run against a live server')
     s=sub.add_parser('check',help='run PRAGMA integrity_check and exit non-zero if it finds damage')
     a=p.parse_args();os.umask(0o077);store=Store(a.db)
@@ -1312,47 +800,6 @@ if __name__=='__main__':
     elif a.command=='revoke':store.revoke(a.hub);print(json.dumps({'revoked':a.hub}))
     elif a.command=='suspend':store.suspend(a.account);print(json.dumps({'account':a.account,'suspended':True}))
     elif a.command=='unsuspend':store.unsuspend(a.account);print(json.dumps({'account':a.account,'suspended':False}))
-    elif a.command=='alert':
-        stale=store.stale_webhook_accounts(a.hours)
-        payload={'checked_hours':a.hours,'count':len(stale),'stale_accounts':stale}
-        if not stale:print(json.dumps(payload))
-        elif a.dry_run:print(json.dumps(dict(payload,sent=False,dry_run=True)))
-        elif not a.to:print(json.dumps(dict(payload,sent=False,error='ALERT_TO not configured')));sys.exit(2)
-        else:
-            body=('中央サーバーのStripe Webhookが%d時間以上受信されていません。\n'
-                  '契約・課金の反映が止まっている可能性があります。\n\n'%a.hours)
-            body+='\n'.join('・%s 最終受信: %s (%s)'%(x['account'],x['last_webhook_at'] or 'なし',x['last_webhook_type'] or '-') for x in stale)+'\n'
-            mailer.send(a.to,'[AutoRepair中央] Webhook未受信の警告',body)
-            print(json.dumps(dict(payload,sent=True,to=a.to)))
-    elif a.command=='reconcile':
-        started=utc()
-        if a.from_stripe:
-            key=os.environ.get('STRIPE_SECRET_KEY','')
-            if not key:print(json.dumps({'error':'STRIPE_SECRET_KEY not configured'}));sys.exit(2)
-            targets=[a.account] if a.account else store.account_ids()
-            results=[]
-            for acct in targets:
-                try:results.append(backfill_account(store,acct,key,apply=a.apply,now=started))
-                except Exception as exc:results.append({'account':acct,'skipped':True,'reason':'error: '+str(exc),'actions':[]})
-            recorded=sum(1 for r in results for x in (r.get('actions') or []) if x.get('action')=='recorded')
-            store.record_reconciliation(started,'stripe',a.apply,len(targets),recorded,json.dumps(results,ensure_ascii=False))
-            print(json.dumps({'mode':'stripe','apply':a.apply,'accounts':len(targets),'recorded':recorded,'results':results},ensure_ascii=False))
-        else:
-            month=a.month or store.latest_month()
-            if not month:print(json.dumps({'error':'no observed month yet; pass --month YYYY-MM-DD'}));sys.exit(2)
-            rows=store.reconcile_month(month)
-            store.record_reconciliation(started,'local',False,len(rows),0,json.dumps(rows,ensure_ascii=False))
-            print(json.dumps({'mode':'local','month':month,'rows':rows},ensure_ascii=False))
-            if a.notify:
-                to=os.environ.get('RECONCILE_TO') or os.environ.get('ALERT_TO','')
-                if not to:print(json.dumps({'error':'RECONCILE_TO/ALERT_TO not configured'}));sys.exit(2)
-                bad=[r for r in rows if r['state'] in ('missing_payment','amount_mismatch','unpaid')]
-                body='[AutoRepair中央] 月次突合レポート (手動実行)\n\n対象月: %s\n\n'%month
-                body+='\n'.join('・%s 観測peak=%s 請求予定=%s 記録=%s(%s) 判定=%s'%(
-                        r['account'],r['peak'],yen_text(r['expected_usd_cents']),yen_text(r['recorded_usd_cents']),r['recorded_status'],r['state']) for r in rows)
-                body+='\n\n要確認: %d件\n'%len(bad)
-                mailer.send(to,'[AutoRepair中央] 月次突合レポート (手動実行)',body)
-                print(json.dumps({'notified_to':to,'rows':len(rows),'needs_review':len(bad)},ensure_ascii=False))
     elif a.command=='backup':store.backup(a.target);print(json.dumps({'backed_up_to':a.target}))
     elif a.command=='check':
         result=store.check();print(json.dumps({'integrity_check':result}))
@@ -1360,8 +807,4 @@ if __name__=='__main__':
     else:
         # Threaded because each request opens its own SQLite connection (see Store.db) and
         # closes it before returning; a single slow client must not stall every other hub.
-        if os.environ.get('ALERT_TO'):
-            threading.Thread(target=alert_loop,args=(store,os.environ['ALERT_TO'],int(os.environ.get('ALERT_HOURS','48')),float(os.environ.get('ALERT_INTERVAL_HOURS','6'))),daemon=True).start()
-        if os.environ.get('RECONCILE_TO') or os.environ.get('ALERT_TO'):
-            threading.Thread(target=reconcile_loop,args=(store,os.environ.get('RECONCILE_TO') or os.environ['ALERT_TO'],int(os.environ.get('RECONCILE_DAY','5')),float(os.environ.get('RECONCILE_INTERVAL_HOURS','6')),os.environ.get('RECONCILE_FROM_STRIPE','0')=='1'),daemon=True).start()
         ThreadingHTTPServer((a.host,a.port),handler(store)).serve_forever()
