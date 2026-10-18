@@ -543,6 +543,12 @@ class Tests(unittest.TestCase):
    with urllib.request.urlopen(req) as res:body=json.load(res)
    self.assertTrue(body['hub'].startswith('hub-'));self.assertTrue(re.fullmatch('[a-f0-9]{64}',body['hub_token']))
    self.assertEqual(self.s.status(body['hub_token'],self.now)['current'],0)
+   # An already connected hub can safely issue a credential for one additional
+   # WordPress site when the management-email link was not delivered.
+   connected=urllib.request.Request(url+'/v1/hubs/issue',data=b'',headers={'Authorization':'Bearer '+self.a},method='POST')
+   with urllib.request.urlopen(connected) as res:issued_from_hub=json.load(res)
+   self.assertTrue(issued_from_hub['hub'].startswith('hub-'));self.assertTrue(re.fullmatch('[a-f0-9]{64}',issued_from_hub['hub_token']))
+   self.assertEqual(self.s.status(issued_from_hub['hub_token'],self.now)['current'],0)
    old=self.a
    rotate=urllib.request.Request(url+'/v1/manage/hubs/hub1/rotate',data=b'',headers={'Authorization':'Bearer '+token},method='POST')
    with urllib.request.urlopen(rotate) as res:rotated=json.load(res)
@@ -553,6 +559,9 @@ class Tests(unittest.TestCase):
    with self.assertRaises(urllib.error.HTTPError) as err:urllib.request.urlopen(bad)
    self.assertEqual(err.exception.code,401)
    forbidden=urllib.request.Request(url+'/v1/manage/hubs/hub1/rotate',data=b'',headers={'Authorization':'Bearer deadbeef'},method='POST')
+   with self.assertRaises(urllib.error.HTTPError) as err:urllib.request.urlopen(forbidden)
+   self.assertEqual(err.exception.code,401)
+   forbidden=urllib.request.Request(url+'/v1/hubs/issue',data=b'',headers={'Authorization':'Bearer deadbeef'},method='POST')
    with self.assertRaises(urllib.error.HTTPError) as err:urllib.request.urlopen(forbidden)
    self.assertEqual(err.exception.code,401)
   finally:server.shutdown();server.server_close();thread.join()

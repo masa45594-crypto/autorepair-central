@@ -583,6 +583,15 @@ def handler(store):
                     with store.db() as c:row=store.auth_management(c,token)
                     hub,hub_token=store.issue_additional_hub(row['account'])
                     r={'hub':hub,'hub_token':hub_token}
+                elif self.command=='POST' and self.path=='/v1/hubs/issue':
+                    # A connected hub may onboard one additional WordPress site for the
+                    # same account.  This is the recovery path when the original
+                    # management email was not delivered: it never reveals or changes
+                    # an existing hub credential, and the new credential is returned
+                    # exactly once to the already-authenticated control hub.
+                    with store.db() as c:h=store.auth(c,token)
+                    hub,hub_token=store.issue_additional_hub(h['account'])
+                    r={'hub':hub,'hub_token':hub_token}
                 elif self.command=='POST' and re.fullmatch(r'/v1/manage/hubs/[a-z0-9_-]{1,64}/rotate',self.path):
                     # A management token can replace a lost hub credential, but
                     # can never read the old one back. The replacement is shown
