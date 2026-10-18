@@ -57,6 +57,7 @@ class Store:
             CREATE TABLE IF NOT EXISTS months(account TEXT NOT NULL, month TEXT NOT NULL, peak INTEGER NOT NULL, base INTEGER NOT NULL, unit INTEGER NOT NULL, PRIMARY KEY(account,month));
             CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY, hub TEXT NOT NULL, sequence INTEGER NOT NULL, digest TEXT NOT NULL, received TEXT NOT NULL, count INTEGER NOT NULL, UNIQUE(hub,sequence));
             CREATE TABLE IF NOT EXISTS stripe_events(id TEXT PRIMARY KEY, type TEXT NOT NULL, received TEXT NOT NULL, payload TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS audit_log(id INTEGER PRIMARY KEY, at TEXT NOT NULL, actor TEXT NOT NULL, action TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '');
             CREATE TABLE IF NOT EXISTS payments(account TEXT NOT NULL, month TEXT NOT NULL, status TEXT NOT NULL, amount INTEGER, recorded_at TEXT NOT NULL, PRIMARY KEY(account,month));
             CREATE TABLE IF NOT EXISTS management_tokens(account TEXT PRIMARY KEY REFERENCES accounts(id), token_hash TEXT UNIQUE NOT NULL, stripe_customer TEXT NOT NULL, created TEXT NOT NULL);
             ''')
@@ -106,6 +107,11 @@ class Store:
     def check(self):
         with self.db() as c:
             return c.execute('PRAGMA integrity_check').fetchone()[0]
+    def audit(self,actor,action,detail=''):
+        """Append a bounded audit entry without retaining request credentials."""
+        with self.db() as c:
+            c.execute('INSERT INTO audit_log(at,actor,action,detail) VALUES(?,?,?,?)',
+                      (utc(),str(actor)[:32],str(action)[:64],str(detail)[:500]))
     def record_stripe_event(self,event,now=None):
         """Durably record an already-verified Stripe webhook event, once. Returns False for a
         duplicate delivery (Stripe retries at-least-once) so callers can skip reprocessing.
@@ -535,17 +541,44 @@ def overage_price_info(key):
     _overage_price_cache[price_id]=(time.time(),info)
     return info
 
+# Request limiter used by the public HTTP entrypoint.  Keep this at module scope
+# so the regression test and every Handler instance share one set of buckets.
+_RATE_HITS={}
+_RATE_LOCK=threading.Lock()
+
+def client_key(headers,peer):
+    """Return the platform-provided client identity, with a safe proxy fallback.
+
+    Render is behind a proxy, so the socket peer is normally the proxy rather
+    than the visitor.  CF-Connecting-IP and X-Real-IP are preferred when the
+    platform supplies them; for X-Forwarded-For the right-most value is the
+    proxy-facing address, so a visitor cannot evade the limit by prepending a
+    forged left-most value.
+    """
+    for name in ('CF-Connecting-IP','X-Real-IP'):
+        value=(headers.get(name) or '').strip()
+        if value:return value
+    forwarded=(headers.get('X-Forwarded-For') or '').strip()
+    if forwarded:
+        value=forwarded.rsplit(',',1)[-1].strip()
+        if value:return value
+    return str(peer)
+
+def rate_limited(key,limit=5,window=600):
+    """Record one request and report whether its rolling-window budget is spent."""
+    now=time.time()
+    bucket=(str(key),int(limit),int(window))
+    with _RATE_LOCK:
+        hits=[t for t in _RATE_HITS.get(bucket,()) if now-t<window]
+        hits.append(now)
+        _RATE_HITS[bucket]=hits
+        return len(hits)>limit
+
+def redact_path(path):
+    """Keep route-only audit records; never retain query-string credentials."""
+    return urlparse(path).path
+
 def handler(store):
-    # Shared across requests/threads: a simple in-memory rate limit for the public signup
-    # endpoint. Resets on restart and is per-process (fine at pilot scale; a real multi-
-    # instance deployment would need a shared store instead).
-    signup_hits={};signup_lock=threading.Lock()
-    def rate_limited(ip,limit=5,window=600):
-        now=time.time()
-        with signup_lock:
-            hits=[t for t in signup_hits.get(ip,()) if now-t<window]
-            hits.append(now);signup_hits[ip]=hits
-            return len(hits)>limit
     class Handler(BaseHTTPRequestHandler):
         def setup(self):
             super().setup();self.connection.settimeout(10)
@@ -555,6 +588,11 @@ def handler(store):
             self.send_header('Content-Type','application/json');self.send_header('Cache-Control','no-store');self.send_header('Content-Length',str(len(body)));self.end_headers();self.wfile.write(body)
         def dispatch(self):
             try:
+                identity=client_key(self.headers,self.client_address[0])
+                # Broad, short-window guard for every HTTP route.  The stricter
+                # signup-specific budget remains below for POST /v1/signup.
+                if rate_limited(identity,limit=240,window=60):
+                    store.audit('http','rate_limited',redact_path(self.path));return self.reply(429,{'error':'rate_limited'})
                 auth=self.headers.get('Authorization','');token=auth[7:] if auth.startswith('Bearer ') else ''
                 if self.command=='GET' and self.path=='/v1/usage': r=with_billing_contract(store.status(token))
                 elif self.command=='GET' and self.path=='/signup':
@@ -757,7 +795,8 @@ def handler(store):
                     price_id=os.environ.get('STRIPE_PRICE_ID','');success_url=os.environ.get('SIGNUP_SUCCESS_URL','')
                     cancel_url=os.environ.get('SIGNUP_CANCEL_URL','');key=stripe_secret_key()
                     if not (price_id and success_url and cancel_url and key):return self.reply(404,{'error':'not_found'})
-                    if rate_limited(self.client_address[0]):return self.reply(429,{'error':'rate_limited'})
+                    if rate_limited(identity):
+                        store.audit('http','rate_limited',redact_path(self.path));return self.reply(429,{'error':'rate_limited'})
                     size=int(self.headers.get('Content-Length','0'))
                     if not 0<=size<=4000:raise Invalid('payload size')
                     body=json.loads(self.rfile.read(size)) if size else {}
