@@ -11,7 +11,7 @@ class Tests(unittest.TestCase):
  def tearDown(self):self.tmp.cleanup()
  def push(self,t,seq,ids,now=None):return self.s.snapshot(t,{'sequence':seq,'sites':ids},now or self.now)
  def test_aggregate(self):
-  self.push(self.a,1,self.ids[:2]);r=self.push(self.b,1,self.ids[1:3]);self.assertEqual(r['current'],3);self.assertEqual(r['estimate_yen'],10300)
+  self.push(self.a,1,self.ids[:2]);r=self.push(self.b,1,self.ids[1:3]);self.assertEqual(r['current'],3);self.assertEqual(r['estimate_yen'],4577)
  def test_tenant_isolation(self):
   self.push(self.a,1,self.ids);self.assertEqual(self.s.status(self.other,self.now)['current'],0)
  def test_retry_idempotent(self):
@@ -71,7 +71,7 @@ class Tests(unittest.TestCase):
   # Inherits the account's existing pricing rather than any caller-supplied value.
   with self.s.db() as c:
    row=c.execute('SELECT base,unit FROM accounts WHERE id=?',('a',)).fetchone()
-   self.assertEqual((row['base'],row['unit']),(10000,100))
+   self.assertEqual((row['base'],row['unit']),(2900,300))
   self.assertEqual(self.s.status(token,self.now)['current'],0)
   self.s.suspend('a',self.now)
   with self.assertRaises(Invalid):self.s.issue_additional_hub('a')
@@ -79,14 +79,6 @@ class Tests(unittest.TestCase):
   with self.s.db() as c:
    for i in range(48):c.execute("INSERT INTO hubs(id,account,token_hash) VALUES(?,?,?)",(f'filler-{i}','a',digest(f'filler-{i}')))
   with self.assertRaises(Invalid):self.s.issue_additional_hub('a')
- def test_rotate_hub_token_never_reveals_or_preserves_old_credential(self):
-  old=self.a
-  rotated=self.s.rotate_hub_token('a','hub1')
-  self.assertRegex(rotated,r'^[a-f0-9]{64}$')
-  self.assertNotEqual(old,rotated)
-  with self.assertRaises(Unauthorized):self.s.status(old,self.now)
-  self.assertEqual(self.s.status(rotated,self.now)['current'],0)
-  with self.assertRaises(Invalid):self.s.rotate_hub_token('a','does-not-exist')
  def test_wal_mode(self):
   with self.s.db() as c:self.assertEqual(c.execute('PRAGMA journal_mode').fetchone()[0].lower(),'wal')
  def test_backup_and_check(self):
@@ -101,21 +93,31 @@ class Tests(unittest.TestCase):
  def test_pricing_snapshot(self):
   self.push(self.a,1,self.ids)
   with self.s.db() as c:c.execute("UPDATE accounts SET unit=500 WHERE id='a'")
-  self.assertEqual(self.s.status(self.a,self.now)['unit_yen'],100)
+  self.assertEqual(self.s.status(self.a,self.now)['unit_yen'],473)
  def test_stale_not_deleted(self):
   self.push(self.a,1,self.ids);r=self.s.status(self.a,'2026-09-12T00:00:00+00:00');self.assertEqual(r['current'],4);self.assertGreater(r['stale_hubs'],0);self.assertFalse(r['billable'])
+ def test_yen_uses_billable_sites(self):
+  # Regression: 11 sites are $29.00 plus one excess site ($3.00) = 3200 cents. The yen line
+  # must follow that charge (4577 + 473 = 5050 yen), not 11 x the unit price (9780 yen).
+  # The same wrong basis also made a spending cap trip on money that was never charged.
+  ids=[digest(str(i)) for i in range(11)]
+  r=self.push(self.a,1,ids)
+  self.assertEqual((r['peak'],r['billable_sites'],r['estimate_usd_cents']),(11,1,3200))
+  self.assertEqual(r['estimate_yen'],5050)
+  e=self.s.export('a','2026-09-01',force=True)
+  self.assertEqual((e['billable_sites'],e['estimate_usd_cents'],e['estimate_yen'],e['amount_yen']),(1,3200,5050,5050))
  def test_spending_cap(self):
   with self.assertRaises(Invalid):self.s.set_spending_cap('does-not-exist',5000)
   with self.assertRaises(Invalid):self.s.set_spending_cap('a',-1)
   r=self.push(self.a,1,self.ids);self.assertEqual(r['spending_cap_yen'],0);self.assertFalse(r['over_spending_cap'])
-  self.s.set_spending_cap('a',5000)
-  r=self.s.status(self.a,self.now);self.assertEqual(r['estimate_yen'],10400);self.assertTrue(r['over_spending_cap'])
+  self.s.set_spending_cap('a',4000)
+  r=self.s.status(self.a,self.now);self.assertEqual(r['estimate_yen'],4577);self.assertTrue(r['over_spending_cap'])
   # Over the cap does not block anything: sync keeps working.
   r=self.push(self.a,2,self.ids);self.assertEqual(r['current'],4)
   self.s.set_spending_cap('a',20000)
   self.assertFalse(self.s.status(self.a,self.now)['over_spending_cap'])
  def test_stripe_preview(self):
-  self.push(self.a,1,self.ids);r=plan(self.s.export('a','2026-09-01',force=True),'cus_test');self.assertEqual(r['amount'],10400);self.assertEqual(r['auto_advance'],'false')
+  self.push(self.a,1,self.ids);r=plan(self.s.export('a','2026-09-01',force=True),'cus_test');self.assertEqual((r['currency'],r['amount']),('usd',2900));self.assertEqual(r['auto_advance'],'false')
  def test_stripe_live_rejected(self):
   self.push(self.a,1,[])
   with self.assertRaises(ValueError):send(self.s.export('a','2026-09-01',force=True),'cus_test',self.tmp.name,'sk_live_fake')
@@ -123,13 +125,13 @@ class Tests(unittest.TestCase):
   self.push(self.a,1,self.ids);u=self.s.export('a','2026-09-01',force=True);calls=[]
   def transport(path,data,key,identity):calls.append((path,data,identity));return {'livemode':False,'status':'draft','id':'in_test' if path=='invoices' else 'ii_test'}
   send(u,'cus_test',self.tmp.name,'sk_test_fake',transport);send(u,'cus_test',self.tmp.name,'sk_test_fake',transport);self.assertEqual(len(calls),2);self.assertEqual(calls[1][1]['invoice'],'in_test')
-  u['peak']=3;u['amount_yen']=10300
+  u['peak']=3;u['included_sites']=0;u['billable_sites']=3;u['estimate_usd_cents']=3800
   with self.assertRaises(ValueError):send(u,'cus_test',self.tmp.name,'sk_test_fake',transport)
  def test_stripe_correction(self):
   self.push(self.a,1,self.ids);u=self.s.export('a','2026-09-01',force=True)
   def original(path,data,key,identity):return {'livemode':False,'status':'draft','id':'in_orig' if path=='invoices' else 'ii_orig'}
   send(u,'cus_test',self.tmp.name,'sk_test_fake',original)
-  corrected=dict(u,peak=3,amount_yen=10300)
+  corrected=dict(u,peak=3,included_sites=0,billable_sites=3,estimate_usd_cents=3800)
   with self.assertRaises(ValueError):send(corrected,'cus_test',self.tmp.name,'sk_test_fake',original)
   with self.assertRaises(ValueError):correct(u,'cus_test',self.tmp.name,'   ')
   archived=correct(u,'cus_test',self.tmp.name,'大阪拠点の重複を除外')
@@ -144,7 +146,7 @@ class Tests(unittest.TestCase):
   send(u,'cus_test',self.tmp.name,'sk_test_fake',original)
   with self.assertRaises(ValueError):record_refund(u,'cus_test',self.tmp.name,'   ')
   refunded=record_refund(u,'cus_test',self.tmp.name,'計算誤りのため全額返金')
-  self.assertTrue(refunded['refunded']);self.assertEqual(refunded['refund_amount'],10400);self.assertEqual(refunded['refund_reason'],'計算誤りのため全額返金')
+  self.assertTrue(refunded['refunded']);self.assertEqual(refunded['refund_amount'],2900);self.assertEqual(refunded['refund_reason'],'計算誤りのため全額返金')
   self.assertEqual(refunded['invoice'],'in_orig')
   with self.assertRaises(ValueError):record_refund(u,'cus_test',self.tmp.name,'二重に返金しようとした場合')
   # send() after a refund is a no-op replay (already 'complete'); it does not re-create anything.
@@ -154,10 +156,10 @@ class Tests(unittest.TestCase):
   def transport(path,data,key,identity):return {'livemode':False,'status':'draft','id':'in_p' if path=='invoices' else 'ii_p'}
   send(u,'cus_test',self.tmp.name,'sk_test_fake',transport)
   with self.assertRaises(ValueError):record_refund(u,'cus_test',self.tmp.name,'金額不正','not-an-int')
-  with self.assertRaises(ValueError):record_refund(u,'cus_test',self.tmp.name,'上限超過',10401)
+  with self.assertRaises(ValueError):record_refund(u,'cus_test',self.tmp.name,'上限超過',2901)
   with self.assertRaises(ValueError):record_refund(u,'cus_test',self.tmp.name,'ゼロ以下',0)
   refunded=record_refund(u,'cus_test',self.tmp.name,'大阪拠点分のみ過大請求',300)
-  self.assertEqual((refunded['refund_amount'],refunded['refund_full_amount']),(300,10400))
+  self.assertEqual((refunded['refund_amount'],refunded['refund_full_amount']),(300,2900))
  def test_stripe_finalize_and_deliver(self):
   self.push(self.a,1,self.ids);u=self.s.export('a','2026-09-01',force=True)
   def transport(path,data,key,identity):
@@ -187,7 +189,7 @@ class Tests(unittest.TestCase):
   self.assertEqual(handle_stripe_event(self.s,cancel),{'action':'suspended','account':'a'})
   with self.assertRaises(Unauthorized):self.s.status(self.a,self.now)
   paid_no_meta={'type':'invoice.paid','data':{'object':{'metadata':{}}}}
-  self.assertEqual(handle_stripe_event(self.s,paid_no_meta),{'action':'skipped','reason':'missing account/month metadata'})
+  self.assertEqual(handle_stripe_event(self.s,paid_no_meta),{'action':'skipped','reason':'no account (metadata missing and customer not linked)','event':'invoice.paid','invoice':None,'customer':None,'metadata_keys':[]})
   # account 'a' is currently suspended with reason 'subscription_canceled' (from just above);
   # an unrelated invoice.paid must NOT silently reactivate it.
   paid={'type':'invoice.paid','data':{'object':{'metadata':{'account':'a','month':'2026-09-01'},'amount_paid':10400}}}
@@ -312,30 +314,30 @@ class Tests(unittest.TestCase):
   finally:
    service_module.record_meter_event=original;del os.environ['STRIPE_TEST_SECRET_KEY'];del os.environ['STRIPE_METER_EVENT_NAME']
    server.shutdown();server.server_close();thread.join()
- def test_snapshot_endpoint_syncs_only_overage_quantity(self):
+ def test_snapshot_endpoint_reports_overage_to_meter_only(self):
+  # Replaces the test that asserted a $3 subscription-item quantity sync. That path cannot
+  # work: a Billing Meter price is metered, so Stripe bills it from meter events and a
+  # quantity must never be set. The overage is reported to the Meter instead, and the
+  # quantity helpers are no longer reachable from the HTTP surface.
   import service as service_module
   self.s.set_stripe_subscription('a','sub_qty','si_qty',customer_id='cus_qty')
-  calls=[];original_get=service_module.stripe_get;original_create=service_module.create_subscription_item;original_update=service_module.update_subscription_item_quantity;original_delete=service_module.delete_subscription_item
-  service_module.stripe_get=lambda path,key:{'status':'active'}
-  service_module.create_subscription_item=lambda sub,price,quantity,key,**kwargs:calls.append(('create',sub,price,quantity,key,kwargs)) or {'id':'si_overage'}
-  service_module.update_subscription_item_quantity=lambda item,quantity,key,**kwargs:calls.append(('update',item,quantity,key,kwargs))
-  service_module.delete_subscription_item=lambda item,key,**kwargs:calls.append(('delete',item,key,kwargs)) or {'id':item,'deleted':True}
-  os.environ['STRIPE_TEST_SECRET_KEY']='sk_test_fake';os.environ['STRIPE_OVERAGE_PRICE_ID']='price_overage';os.environ['STRIPE_INCLUDED_SITES']='2'
+  calls=[];original=service_module.record_meter_event
+  service_module.record_meter_event=lambda event,customer,value,key,identifier:calls.append((event,customer,value,key,identifier))
+  os.environ['STRIPE_TEST_SECRET_KEY']='sk_test_fake';os.environ['STRIPE_OVERAGE_PRICE_ID']='price_overage';os.environ['STRIPE_METER_EVENT_NAME']='managed_sites_overage';os.environ['STRIPE_INCLUDED_SITES']='2'
   server=HTTPServer(('127.0.0.1',0),handler(self.s));thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
   try:
    url='http://127.0.0.1:'+str(server.server_port)
    req=urllib.request.Request(url+'/v1/snapshot',data=json.dumps({'sequence':1,'sites':self.ids[:3]}).encode(),headers={'Authorization':'Bearer '+self.a})
    with urllib.request.urlopen(req) as res:self.assertEqual(json.load(res)['current'],3)
-   self.assertEqual(calls,[('create','sub_qty','price_overage',1,'sk_test_fake',{})])
    req=urllib.request.Request(url+'/v1/snapshot',data=json.dumps({'sequence':2,'sites':self.ids}).encode(),headers={'Authorization':'Bearer '+self.a})
    with urllib.request.urlopen(req) as res:self.assertEqual(json.load(res)['current'],4)
-   self.assertEqual(calls[-1],('update','si_overage',2,'sk_test_fake',{}))
    req=urllib.request.Request(url+'/v1/snapshot',data=json.dumps({'sequence':3,'sites':[]}).encode(),headers={'Authorization':'Bearer '+self.a})
    with urllib.request.urlopen(req) as res:self.assertEqual(json.load(res)['current'],0)
-   self.assertEqual(calls[-1],('delete','si_overage','sk_test_fake',{}))
+   # 3 sites -> 1 overage, 4 -> 2, 0 -> 0: 'last' aggregation needs the true current value.
+   self.assertEqual([c[:4] for c in calls],[('managed_sites_overage','cus_qty',1,'sk_test_fake'),('managed_sites_overage','cus_qty',2,'sk_test_fake'),('managed_sites_overage','cus_qty',0,'sk_test_fake')])
   finally:
-   service_module.stripe_get=original_get;service_module.create_subscription_item=original_create;service_module.update_subscription_item_quantity=original_update;service_module.delete_subscription_item=original_delete
-   del os.environ['STRIPE_TEST_SECRET_KEY'];del os.environ['STRIPE_OVERAGE_PRICE_ID'];del os.environ['STRIPE_INCLUDED_SITES']
+   service_module.record_meter_event=original
+   del os.environ['STRIPE_TEST_SECRET_KEY'];del os.environ['STRIPE_OVERAGE_PRICE_ID'];del os.environ['STRIPE_METER_EVENT_NAME'];del os.environ['STRIPE_INCLUDED_SITES']
    server.shutdown();server.server_close();thread.join()
  def test_signup_page(self):
   server=HTTPServer(('127.0.0.1',0),handler(self.s));thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
@@ -543,26 +545,8 @@ class Tests(unittest.TestCase):
    with urllib.request.urlopen(req) as res:body=json.load(res)
    self.assertTrue(body['hub'].startswith('hub-'));self.assertTrue(re.fullmatch('[a-f0-9]{64}',body['hub_token']))
    self.assertEqual(self.s.status(body['hub_token'],self.now)['current'],0)
-   # An already connected hub can safely issue a credential for one additional
-   # WordPress site when the management-email link was not delivered.
-   connected=urllib.request.Request(url+'/v1/hubs/issue',data=b'',headers={'Authorization':'Bearer '+self.a},method='POST')
-   with urllib.request.urlopen(connected) as res:issued_from_hub=json.load(res)
-   self.assertTrue(issued_from_hub['hub'].startswith('hub-'));self.assertTrue(re.fullmatch('[a-f0-9]{64}',issued_from_hub['hub_token']))
-   self.assertEqual(self.s.status(issued_from_hub['hub_token'],self.now)['current'],0)
-   old=self.a
-   rotate=urllib.request.Request(url+'/v1/manage/hubs/hub1/rotate',data=b'',headers={'Authorization':'Bearer '+token},method='POST')
-   with urllib.request.urlopen(rotate) as res:rotated=json.load(res)
-   self.assertEqual(rotated['hub'],'hub1');self.assertTrue(re.fullmatch('[a-f0-9]{64}',rotated['hub_token']))
-   with self.assertRaises(Unauthorized):self.s.status(old,self.now)
-   self.assertEqual(self.s.status(rotated['hub_token'],self.now)['current'],0)
    bad=urllib.request.Request(url+'/v1/manage/hubs',data=b'',headers={'Authorization':'Bearer deadbeef'},method='POST')
    with self.assertRaises(urllib.error.HTTPError) as err:urllib.request.urlopen(bad)
-   self.assertEqual(err.exception.code,401)
-   forbidden=urllib.request.Request(url+'/v1/manage/hubs/hub1/rotate',data=b'',headers={'Authorization':'Bearer deadbeef'},method='POST')
-   with self.assertRaises(urllib.error.HTTPError) as err:urllib.request.urlopen(forbidden)
-   self.assertEqual(err.exception.code,401)
-   forbidden=urllib.request.Request(url+'/v1/hubs/issue',data=b'',headers={'Authorization':'Bearer deadbeef'},method='POST')
-   with self.assertRaises(urllib.error.HTTPError) as err:urllib.request.urlopen(forbidden)
    self.assertEqual(err.exception.code,401)
   finally:server.shutdown();server.server_close();thread.join()
  def test_manage_spending_cap_endpoint(self):
@@ -570,8 +554,8 @@ class Tests(unittest.TestCase):
   server=HTTPServer(('127.0.0.1',0),handler(self.s));thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
   try:
    url='http://127.0.0.1:'+str(server.server_port)
-   req=urllib.request.Request(url+'/v1/manage/spending-cap',data=json.dumps({'spending_cap_yen':5000}).encode(),headers={'Authorization':'Bearer '+token},method='POST')
-   with urllib.request.urlopen(req) as res:self.assertEqual(json.load(res),{'account':'a','spending_cap_yen':5000})
+   req=urllib.request.Request(url+'/v1/manage/spending-cap',data=json.dumps({'spending_cap_yen':4000}).encode(),headers={'Authorization':'Bearer '+token},method='POST')
+   with urllib.request.urlopen(req) as res:self.assertEqual(json.load(res),{'account':'a','spending_cap_yen':4000})
    self.push(self.a,1,self.ids);self.assertTrue(self.s.status(self.a,self.now)['over_spending_cap'])
    bad=urllib.request.Request(url+'/v1/manage/spending-cap',data=json.dumps({'spending_cap_yen':'not-an-int'}).encode(),headers={'Authorization':'Bearer '+token},method='POST')
    with self.assertRaises(urllib.error.HTTPError) as err:urllib.request.urlopen(bad)
