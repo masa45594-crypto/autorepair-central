@@ -1,14 +1,14 @@
 {
- "version": "0.20.48",
- "download_url": "https://raw.githubusercontent.com/masa45594-crypto/autorepair-central/main/autorepair-ai-hosting-beta-0.20.48-install.zip",
- "sha256": "3e176c34b9b806cac1775c0565d96bff41ceed9bd95c933233fba7b10cd98129",
+ "version": "0.20.49",
+ "download_url": "https://raw.githubusercontent.com/masa45594-crypto/autorepair-central/main/autorepair-ai-hosting-beta-0.20.49-install.zip",
+ "sha256": "88d96d5bd13a3f37d319c47969248d81331d0a5e2a37095c909ab0a18f6c77f5",
  "requires": "6.2",
  "tested": "6.8",
  "requires_php": "7.4",
  "homepage": "https://ti0321.com/upload/",
  "last_updated": "2026-10-18 00:00:00",
  "sections": {
-  "description": "0.20.48: 中央サーバーの拠点トークンが復号できないとき、拠点一覧・Stripeテスト画面・登録確認が致命的エラーで停止する不具合を修正しました。0.20.47: 拠点トークンの再発行に対応しました。",
-  "changelog": "<h4>0.20.48</h4><ul><li>拠点トークンを復号できないときに管理画面が停止する不具合を修正しました（残りの呼び出し箇所にも適用）。</li><li>復号できないときは「未接続」として扱い、管理画面は開いたまま操作できます。</li></ul>\n<h4>0.20.47</h4><ul><li>「失われた拠点トークンを再発行する」を追加しました。</li></ul>"
+  "description": "0.20.49: 配布パッケージから開発用テスト（tests/）を除外。サイト登録テーブルの読み取りを60秒キャッシュし、管理画面での重複クエリを削減（書き込み・削除時は即時破棄）。管理画面の数値・見出し出力を整数化・エスケープ。",
+  "changelog": "= 0.20.49 =\n* 配布zipから tests/ を除外。\n* AAIHB_Beta::sites()/sites_count() に60秒の読み取りキャッシュを追加（site_put/site_delete で即時破棄）。\n* 管理画面の数値出力を整数化、見出しをエスケープ。\n\n= 0.20.48 =\n* 中央サーバーの拠点トークンが復号できないとき、管理画面が致命的エラーで停止する不具合を修正。"
  }
 }
