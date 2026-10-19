@@ -17,6 +17,7 @@ SIGNUP_PAGE_HTML="""<!doctype html><html lang="ja"><head><meta charset="utf-8"><
 <body style="font-family:sans-serif;max-width:480px;margin:80px auto;text-align:center">
 <h1>AutoRepair AI Hosting</h1>
 <p>__NOTICE__</p>
+<p style="font-size:15px;font-weight:700;color:#0a7d32;margin:14px 0 4px">__TRIAL__</p>
 <p style="font-size:14px;color:#444">__PRICE__</p>
 <p><input id="email" type="email" placeholder="メールアドレス(任意)" style="width:100%;padding:8px;box-sizing:border-box;margin-bottom:12px"></p>
 <button id="go" style="padding:10px 24px;font-size:16px">お申し込みへ進む</button>
@@ -726,13 +727,16 @@ def signup_page_html():
     if stripe_secret_key().startswith('sk_live_') and stripe_live_enabled():
         suffix=''
         notice='これは本番のお申し込み画面です。ボタンを押して決済を完了すると、実際に課金されます。'
+        trial='プラグインには7日間の無料試用期間があります（全機能）。ご契約の請求はお申し込みと同時に始まります。'
         price=_signup_price_text()
     else:
         suffix='(テスト)'
         notice='これはテストモードのお申し込み画面です。実際の課金は発生しません。'
+        trial='プラグインには7日間の無料試用期間があります（全機能）。'
         price='テスト用の鍵を使用します。実際の請求は作成されません。'
     return (SIGNUP_PAGE_HTML.replace('__TITLE_SUFFIX__',suffix)
-            .replace('__NOTICE__',notice).replace('__PRICE__',price))
+            .replace('__NOTICE__',notice).replace('__TRIAL__',trial)
+            .replace('__PRICE__',price))
 
 
 def stripe_mode(key):
