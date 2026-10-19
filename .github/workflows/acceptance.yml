@@ -43,6 +43,15 @@ jobs:
           plugin_zip="$(find . -maxdepth 1 -name 'autorepair-ai-hosting-beta-*.zip' -printf '%f\n' | sort -V | tail -n 1)"
           test -n "$plugin_zip"
           unzip -q "$plugin_zip" -d /tmp/aaihb-unit
+          # 配布zipから tests/ を除外したため、tests/ を含む最新のzipからテストを補う
+          if [ ! -f /tmp/aaihb-unit/autorepair-ai-hosting-beta/tests/contracts.php ]; then
+            tests_zip=""
+            for z in $(find . -maxdepth 1 -name 'autorepair-ai-hosting-beta-*.zip' -printf '%f\n' | sort -V); do
+              if unzip -l "$z" | grep -q 'autorepair-ai-hosting-beta/tests/contracts.php'; then tests_zip="$z"; fi
+            done
+            test -n "$tests_zip"
+            unzip -q -o "$tests_zip" 'autorepair-ai-hosting-beta/tests/*' -d /tmp/aaihb-unit
+          fi
           cat > /tmp/aaihb-wp-stubs.php <<'STUBS'
           <?php
           // WordPress gettext functions the plugin calls but tests/contracts.php
