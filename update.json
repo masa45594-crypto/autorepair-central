@@ -1,14 +1,14 @@
 {
- "version": "0.20.49",
- "download_url": "https://raw.githubusercontent.com/masa45594-crypto/autorepair-central/main/autorepair-ai-hosting-beta-0.20.49-install.zip",
- "sha256": "88d96d5bd13a3f37d319c47969248d81331d0a5e2a37095c909ab0a18f6c77f5",
- "requires": "6.2",
- "tested": "6.8",
- "requires_php": "7.4",
- "homepage": "https://ti0321.com/upload/",
- "last_updated": "2026-10-18 00:00:00",
- "sections": {
-  "description": "0.20.49: 配布パッケージから開発用テスト（tests/）を除外。サイト登録テーブルの読み取りを60秒キャッシュし、管理画面での重複クエリを削減（書き込み・削除時は即時破棄）。管理画面の数値・見出し出力を整数化・エスケープ。",
-  "changelog": "= 0.20.49 =\n* 配布zipから tests/ を除外。\n* AAIHB_Beta::sites()/sites_count() に60秒の読み取りキャッシュを追加（site_put/site_delete で即時破棄）。\n* 管理画面の数値出力を整数化、見出しをエスケープ。\n\n= 0.20.48 =\n* 中央サーバーの拠点トークンが復号できないとき、管理画面が致命的エラーで停止する不具合を修正。"
- }
+    "version": "0.20.51",
+    "download_url": "https://raw.githubusercontent.com/masa45594-crypto/autorepair-central/main/autorepair-ai-hosting-beta-0.20.51-install.zip",
+    "sha256": "291a31f233717f0c91b6e02219e34d59f5ae7f347bb1026c494de869ca0589d5",
+    "requires": "6.2",
+    "tested": "6.8",
+    "requires_php": "7.4",
+    "homepage": "https://ti0321.com/upload/",
+    "last_updated": "2026-10-29 00:00:00",
+    "sections": {
+        "description": "0.20.51: 企業向けの土台づくり。監査ログ（追記型・ハッシュ連鎖で改ざん検知・CSV/JSON書き出し・保存期間の自動削除）を追加。マルチサイトは AAIHB_ALLOW_MULTISITE または aaihb_allow_multisite フィルタで明示的に許可した場合のみ、サブサイト単位で動作（サイト全体バックアップは単一サイト専用のまま）。docs/enterprise/ にセキュリティチェックシート回答・データ保持ポリシー・監査ログ仕様を同梱。",
+        "changelog": "= 0.20.51 =\n* 監査ログを追加: ログイン成功/失敗、ログアウト、設定変更（キー名のみ）、管理画面POST（項目名のみ）、監査設定・書き出しを追記型で記録。\n* 各行が直前の行のハッシュを保持し、途中の書き換え・削除を「連結の検証」で検出。保存期間で先頭が欠けても連結は維持。\n* CSV（BOM付きUTF-8・数式インジェクション対策）とJSON（検証結果つき）に書き出し可能。保存期間は既定180日、30〜3650日で変更可、毎日自動削除。\n* マルチサイト: 既定は従来どおり単一サイトのみ。明示的に許可した場合だけサブサイト単位で実行でき、データはサイトごとに分離。\n* docs/enterprise/ を同梱（SECURITY-CHECKLIST.md / DATA-RETENTION.md / ACCESS-AUDIT.md）。\n\n= 0.20.50 =\n* CSV一括登録（1行300件・512KBまで、BOM/Shift_JIS/UTF-16LE自動変換、重複検出、結果CSVマスク）。\n"
+    }
 }
