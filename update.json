@@ -1,14 +1,12 @@
 {
- "version": "0.20.49",
- "download_url": "https://raw.githubusercontent.com/masa45594-crypto/autorepair-central/main/autorepair-ai-hosting-beta-0.20.49-install.zip",
- "sha256": "88d96d5bd13a3f37d319c47969248d81331d0a5e2a37095c909ab0a18f6c77f5",
- "requires": "6.2",
- "tested": "6.8",
- "requires_php": "7.4",
- "homepage": "https://ti0321.com/upload/",
- "last_updated": "2026-10-18 00:00:00",
- "sections": {
-  "description": "0.20.49: 配布パッケージから開発用テスト（tests/）を除外。サイト登録テーブルの読み取りを60秒キャッシュし、管理画面での重複クエリを削減（書き込み・削除時は即時破棄）。管理画面の数値・見出し出力を整数化・エスケープ。",
-  "changelog": "= 0.20.49 =\n* 配布zipから tests/ を除外。\n* AAIHB_Beta::sites()/sites_count() に60秒の読み取りキャッシュを追加（site_put/site_delete で即時破棄）。\n* 管理画面の数値出力を整数化、見出しをエスケープ。\n\n= 0.20.48 =\n* 中央サーバーの拠点トークンが復号できないとき、管理画面が致命的エラーで停止する不具合を修正。"
- }
+  "version": "0.20.50",
+  "download_url": "https://raw.githubusercontent.com/masa45594-crypto/autorepair-central/main/autorepair-ai-hosting-beta-0.20.50-install.zip",
+  "requires": "6.2",
+  "tested": "6.8",
+  "requires_php": "7.4",
+  "homepage": "https://ti0321.com/upload/",
+  "last_updated": "2026-10-29 00:00:00",
+  "sha256": "6b0a739b0743cf72e8293e0faf0d1b0badff0f6b88ad9542331dc374aa3b49a3",
+  "description": "「かんたん接続」にCSV一括登録を追加。name,endpoint,token の3列を1行目に持つCSVをアップロードすると、各行を貼り付け欄と同じ検証に通して順次登録し、失敗行の理由を結果CSVで返します。",
+  "changelog": "0.20.50: CSV一括登録（1行300件・512KBまで）、Excel由来のUTF-8 BOM/Shift_JIS/UTF-16LE自動変換、日本語見出し対応、同一URL重複検出、結果CSVダウンロード（トークンは先頭4桁+末尾4桁にマスク）、CSV数式インジェクション対策。登録処理を save_site() に共通化し、貼り付け欄とCSVで同じ検証を使用。"
 }
