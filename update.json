@@ -1,14 +1,14 @@
 {
- "version": "0.20.49",
- "download_url": "https://raw.githubusercontent.com/masa45594-crypto/autorepair-central/main/autorepair-ai-hosting-beta-0.20.49-install.zip",
- "sha256": "88d96d5bd13a3f37d319c47969248d81331d0a5e2a37095c909ab0a18f6c77f5",
+ "version": "0.20.52",
+ "download_url": "https://raw.githubusercontent.com/masa45594-crypto/autorepair-central/main/autorepair-ai-hosting-beta-0.20.52-install.zip",
+ "sha256": "8eaea6d82ab1f2d85954f962cfa2c2cf0e1ae88b61d5b6f5adc1308d051211f5",
  "requires": "6.2",
  "tested": "6.8",
  "requires_php": "7.4",
  "homepage": "https://ti0321.com/upload/",
- "last_updated": "2026-10-18 00:00:00",
+ "last_updated": "2026-10-30 00:00:00",
  "sections": {
-  "description": "0.20.49: 配布パッケージから開発用テスト（tests/）を除外。サイト登録テーブルの読み取りを60秒キャッシュし、管理画面での重複クエリを削減（書き込み・削除時は即時破棄）。管理画面の数値・見出し出力を整数化・エスケープ。",
-  "changelog": "= 0.20.49 =\n* 配布zipから tests/ を除外。\n* AAIHB_Beta::sites()/sites_count() に60秒の読み取りキャッシュを追加（site_put/site_delete で即時破棄）。\n* 管理画面の数値出力を整数化、見出しをエスケープ。\n\n= 0.20.48 =\n* 中央サーバーの拠点トークンが復号できないとき、管理画面が致命的エラーで停止する不具合を修正。"
+  "description": "0.20.52: SSO（OpenID Connect / Authorization Code + PKCE S256）に対応。Entra ID・Google Workspace・Okta などでログインできます。IDトークンはRS256署名（JWKS・kid回転対応）と iss/aud/azp/exp/iat/nbf/nonce を検証し、alg:none と HS256 は拒否します。state・nonce・PKCE verifier は10分で失効する使い捨て、クライアントシークレットはAES-256-GCMで暗号化保存、リダイレクトURIは完全一致。既存ユーザーのロールは変更せず、自動作成は明示的に有効化した場合のみ（administrator割り当ては既定で拒否）。通常のユーザー名／パスワードでのログインは非常口として残し、SSOの開始・失敗・成功・設定変更は監査ログに記録します。",
+  "changelog": "= 0.20.52 =\n* SSO（OpenID Connect）を追加。Authorization Code + PKCE（S256）、既定は無効。\n* IDトークン検証: RS256署名（JWKSを1時間キャッシュ、未知のkidは一度だけ再取得）、iss/aud/azp/exp/iat/nbf/nonce。alg:none と HS256 は拒否。\n* state・nonce・code_verifier は10分で失効する使い捨て（コールバックで即削除）。\n* クライアントシークレットはAES-256-GCMで暗号化保存（画面に再表示しない）。リダイレクトURIは自動変換せず完全一致。\n* ロール対応表・自動作成・許可ドメインは任意設定。既存ユーザーのロールは変更せず、administratorへの自動割り当ては既定で拒否。\n* 通常のユーザー名／パスワードでのログインは非常口として維持。SSOイベントは監査ログに記録。\n* docs/enterprise/SSO-OIDC.md（IdP別の設定例と失敗コード一覧）を同梱。\n\n= 0.20.51 =\n* 監査ログ（追記型・ハッシュ連鎖で改ざん検知・CSV/JSON書き出し・保存期間の自動削除）を追加。\n* マルチサイトは AAIHB_ALLOW_MULTISITE 定数または aaihb_allow_multisite フィルタで明示的に許可した場合のみ、サブサイト単位で実行できます。\n* docs/enterprise/（セキュリティチェックシート回答・データ保持・監査ログ仕様）を同梱しました。\n\n= 0.20.49 =\n* 配布zipから tests/ を除外。\n* AAIHB_Beta::sites()/sites_count() に60秒の読み取りキャッシュを追加（site_put/site_delete で即時破棄）。\n* 管理画面の数値出力を整数化、見出しをエスケープ。"
  }
 }
