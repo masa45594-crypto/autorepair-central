@@ -20,7 +20,8 @@ SIGNUP_PAGE_HTML="""<!doctype html><html lang="ja"><head><meta charset="utf-8"><
 <p style="font-size:15px;font-weight:700;color:#0a7d32;margin:14px 0 4px">__TRIAL__</p>
 <p style="font-size:14px;color:#444">__PRICE__</p>
 <p><input id="email" type="email" placeholder="メールアドレス(任意)" style="width:100%;padding:8px;box-sizing:border-box;margin-bottom:12px"></p>
-<button id="go" style="padding:10px 24px;font-size:16px">お申し込みへ進む</button>
+<p><button id="go" style="padding:10px 24px;font-size:16px">お申し込みへ進む</button>
+<button id="free" style="padding:10px 24px;font-size:16px;background:#0a7d32;color:#fff;border:none">無料で始める（10サイトまで・カード不要）</button></p>
 <p id="err" style="color:#c00"></p>
 <script>
 document.getElementById('go').addEventListener('click',async function(){
@@ -33,6 +34,20 @@ document.getElementById('go').addEventListener('click',async function(){
     location.href=data.url;
   }catch(e){
     document.getElementById('err').textContent='お申し込みを開始できませんでした。しばらくしてから再度お試しください。';
+    btn.disabled=false;
+  }
+});
+document.getElementById('free').addEventListener('click',async function(){
+  var btn=this;btn.disabled=true;document.getElementById('err').textContent='';
+  try{
+    var email=document.getElementById('email').value;
+    var res=await fetch('/v1/signup/free',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(email?{email:email}:{})});
+    var data=await res.json();
+    if(!res.ok||!data.hub_token)throw new Error('failed');
+    document.getElementById('err').style.color='#0a7d32';
+    document.getElementById('err').textContent='拠点トークンを発行しました。WordPressの「利用数と料金」画面に中央サーバーURLとこのトークンを貼り付けて接続してください。案内メールも送信しました。';
+  }catch(e){
+    document.getElementById('err').textContent='発行できませんでした。しばらくしてから再度お試しください。';
     btn.disabled=false;
   }
 });
@@ -1221,6 +1236,31 @@ def handler(store):
                     base=int(os.environ.get('SIGNUP_BASE',str(price_base_usd_cents())));unit=int(os.environ.get('SIGNUP_UNIT',str(price_unit_usd_cents())))
                     session=create_checkout_session(account,hub,price_id,success_url,cancel_url,key,customer_email=email,base=base,unit=unit,allow_live=stripe_live_enabled())
                     r={'url':session['url']}
+                elif self.command=='POST' and self.path=='/v1/signup/free':
+                    # Free-tier signup: provisions a hub without going through Stripe
+                    # Checkout. Billing itself stays with /v1/registration-check, which
+                    # already makes the eleventh and later site conditional on a
+                    # successful Stripe sync, so skipping Checkout here cannot skip a
+                    # charge. Same rate limit and payload caps as the paid signup above.
+                    if not stripe_signup_available():return self.reply(404,{'error':'not_found'})
+                    if rate_limited(client_key(self.headers,self.client_address[0])):store.audit('http','rate_limited',redact_path(self.path));return self.reply(429,{'error':'rate_limited'})
+                    size=int(self.headers.get('Content-Length','0'))
+                    if not 0<=size<=4000:raise Invalid('payload size')
+                    body=json.loads(self.rfile.read(size)) if size else {}
+                    if not isinstance(body,dict):raise Invalid('expected an object')
+                    email=body.get('email')
+                    if email is not None and (not isinstance(email,str) or not re.fullmatch(r'[^@\s]{1,64}@[^@\s]{1,190}\.[^@\s]{2,24}',email)):raise Invalid('invalid email')
+                    account='acct-'+secrets.token_hex(8);hub='hub-'+secrets.token_hex(8)
+                    token=store.provision(account,hub,price_base_usd_cents(),price_unit_usd_cents())
+                    delivered=False
+                    if email:
+                        try:
+                            mailer.send(email,'ご利用開始のご案内',mailer.hub_token_email_body(account,hub,token,None));delivered=True
+                        except Exception as exc:
+                            # The hub exists either way; a mail failure must not 500 a
+                            # successful provisioning. The token stays on screen.
+                            store.audit('http','mail_failed',redact_path(self.path)+' '+str(exc)[:80])
+                    r={'hub':hub,'hub_token':token,'included_sites':included_sites(),'email_delivered':delivered}
                 else:return self.reply(404,{'error':'not_found'})
                 self.reply(200,r)
             except Unauthorized:
