@@ -45,7 +45,10 @@ document.getElementById('free').addEventListener('click',async function(){
     var data=await res.json();
     if(!res.ok||!data.hub_token)throw new Error('failed');
     document.getElementById('err').style.color='#0a7d32';
-    document.getElementById('err').textContent='拠点トークンを発行しました。WordPressの「利用数と料金」画面に中央サーバーURLとこのトークンを貼り付けて接続してください。案内メールも送信しました。';
+    document.getElementById('err').style.color='#0a7d32';
+document.getElementById('err').textContent='拠点トークンを発行しました（案内メールも送信しました）。次に プラグイン（ZIP）をダウンロードして WordPress にインストールし、「利用数と料金」画面に中央サーバーURLとトークンを入力してください。';
+var dl=document.createElement('a');dl.href='https://raw.githubusercontent.com/masa45594-crypto/autorepair-central/main/autorepair-ai-hosting-beta-0.20.54-install.zip';dl.textContent='プラグイン（ZIP）をダウンロード';dl.style.display='inline-block';dl.style.marginTop='8px';document.getElementById('err').after(dl);
+
   }catch(e){
     document.getElementById('err').textContent='発行できませんでした。しばらくしてから再度お試しください。';
     btn.disabled=false;
