@@ -1,14 +1,14 @@
 {
-    "version": "0.20.53",
-    "download_url": "https://raw.githubusercontent.com/masa45594-crypto/autorepair-central/main/autorepair-ai-hosting-beta-0.20.53-install.zip",
-    "sha256": "22d09b9177bf814db0253d4bb442f99f90811b161721d42f5d0f32ba0d186691",
+    "version": "0.20.54",
+    "download_url": "https://raw.githubusercontent.com/masa45594-crypto/autorepair-central/main/autorepair-ai-hosting-beta-0.20.54-install.zip",
+    "sha256": "4261461d5eddae922ee35b19208b2f251ff236b6e5b1a8af6256dd1bda291fa5",
     "requires": "6.2",
     "tested": "6.8",
     "requires_php": "7.4",
     "homepage": "https://ti0321.com/upload/",
-    "last_updated": "2026-10-31 00:00:00",
+    "last_updated": "2026-11-19 00:00:00",
     "sections": {
-        "description": "0.20.53: 自前アップデータ（update.json）を有効化しました。これにより、プラグイン一覧の「更新」に新版が表示され、管理画面から更新できるようになります。診断・復旧・SSO（OpenID Connect）・監査ログの動作は0.20.52と同じです。SSOはAuthorization Code + PKCE（S256）で、IDトークンはRS256署名（JWKS・kid回転対応）と iss/aud/azp/exp/iat/nbf/nonce を検証し、alg:none と HS256 は拒否します。state・nonce・PKCE verifier は10分で失効する使い捨て、クライアントシークレットはAES-256-GCMで暗号化保存、リダイレクトURIは完全一致。既存ユーザーのロールは変更せず、自動作成は明示的に有効化した場合のみ（administrator割り当ては既定で拒否）。通常のユーザー名／パスワードでのログインは非常口として残しています。",
-        "changelog": "= 0.20.53 =\n* 自前アップデータ（updater.php / update.json）を有効化。プラグイン一覧の「更新」に新版が表示されるようになります。\n* 変更は1点のみ（これまで試用版の都合で無効化されていた更新確認フィルターを有効化）。診断・復旧・SSO・監査ログの動作は変わりません。\n* バージョン表記（プラグインヘッダー・バージョン定数・アセット版数・Stable tag）を0.20.53に統一。\n\n= 0.20.52 =\n* SSO（OpenID Connect）を追加。Authorization Code + PKCE（S256）、既定は無効。\n* IDトークン検証: RS256署名（JWKSを1時間キャッシュ、未知のkidは一度だけ再取得）、iss/aud/azp/exp/iat/nbf/nonce。alg:none と HS256 は拒否。\n* state・nonce・code_verifier は10分で失効する使い捨て（コールバックで即削除）。\n* クライアントシークレットはAES-256-GCMで暗号化保存（画面に再表示しない）。リダイレクトURIは自動変換せず完全一致。\n* ロール対応表・自動作成・許可ドメインは任意設定。既存ユーザーのロールは変更せず、administratorへの自動割り当ては既定で拒否。\n* 通常のユーザー名／パスワードでのログインは非常口として維持。SSOイベントは監査ログに記録。\n* docs/enterprise/SSO-OIDC.md（IdP別の設定例と失敗コード一覧）を同梱。\n\n= 0.20.51 =\n* 監査ログ（追記型・ハッシュ連鎖で改ざん検知・CSV/JSON書き出し・保存期間の自動削除）を追加。\n* マルチサイトは AAIHB_ALLOW_MULTISITE 定数または aaihb_allow_multisite フィルタで明示的に許可した場合のみ、サブサイト単位で実行できます。\n* docs/enterprise/（セキュリティチェックシート回答・データ保持・監査ログ仕様）を同梱しました。"
+        "description": "0.20.54: 7日間の無料試用を廃止し、無料枠へ切り替えました。管理サイト10件までは全機能が無料で使えます（期間制限なし）。11サイト目を登録しようとしたときに、アップグレード画面へ案内が切り替わります（診断・履歴の閲覧・バックアップは無料のまま）。申し込み前に「事前確認 → 同意」のステップを入れ、現在の件数とProの料金（月額 $29.00 ＋11件目から1件 $3.00）を画面上で確認してからStripeの申し込みへ進みます。既存ユーザーは移行作業なしで無料枠へ移行します。SSO・監査ログ・診断・復旧の動作は0.20.53と同じです。",
+        "changelog": "= 0.20.54 =\n* 7日間の無料試用を廃止し、無料枠へ切り替えました。管理サイト10件までは全機能が無料で使えます（期間制限なし）。\n* 11サイト目を登録しようとしたときに、アップグレード画面へ案内が切り替わります（新規サイトの登録と有料の操作のみ停止。診断・履歴の閲覧・バックアップは無料のまま）。\n* アップグレード画面に「事前確認 → 同意 → 申し込み」の流れを追加しました。現在の件数とProの料金を確認のうえ、同意後に申し込みボタンが表示されます。\n* 既存ユーザーは移行作業なしで無料枠へ移行します。試用の開始日時・残り日数の表示は廃止しました。\n\n= 0.20.53 =\n* 自前アップデータ（updater.php / update.json）を有効化。プラグイン一覧の「更新」に新版が表示されるようになります。\n* 変更は1点のみ（これまで試用版の都合で無効化されていた更新確認フィルターを有効化）。診断・復旧・SSO・監査ログの動作は変わりません。\n* バージョン表記（プラグインヘッダー・バージョン定数・アセット版数・Stable tag）を0.20.53に統一。\n\n= 0.20.52 =\n* SSO（OpenID Connect）を追加。Authorization Code + PKCE（S256）、既定は無効。\n* IDトークン検証: RS256署名（JWKSを1時間キャッシュ、未知のkidは一度だけ再取得）、iss/aud/azp/exp/iat/nbf/nonce。alg:none と HS256 は拒否。\n* state・nonce・code_verifier は10分で失効する使い捨て（コールバックで即削除）。\n* クライアントシークレットはAES-256-GCMで暗号化保存（画面に再表示しない）。リダイレクトURIは自動変換せず完全一致。\n* ロール対応表・自動作成・許可ドメインは任意設定。既存ユーザーのロールは変更せず、administratorへの自動割り当ては既定で拒否。\n* 通常のユーザー名／パスワードでのログインは非常口として維持。SSOイベントは監査ログに記録。\n* docs/enterprise/SSO-OIDC.md（IdP別の設定例と失敗コード一覧）を同梱。\n\n= 0.20.51 =\n* 監査ログ（追記型・ハッシュ連鎖で改ざん検知・CSV/JSON書き出し・保存期間の自動削除）を追加。\n* マルチサイトは AAIHB_ALLOW_MULTISITE 定数または aaihb_allow_multisite フィルタで明示的に許可した場合のみ、サブサイト単位で実行できます。\n* docs/enterprise/（セキュリティチェックシート回答・データ保持・監査ログ仕様）を同梱しました。"
     }
 }
