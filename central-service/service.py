@@ -19,7 +19,7 @@ SIGNUP_PAGE_HTML="""<!doctype html><html lang="ja"><head><meta charset="utf-8"><
 <p>__NOTICE__</p>
 <p style="font-size:15px;font-weight:700;color:#0a7d32;margin:14px 0 4px">__TRIAL__</p>
 <p style="font-size:14px;color:#444">__PRICE__</p>
-<p><input id="email" type="email" placeholder="メールアドレス(任意)" style="width:100%;padding:8px;box-sizing:border-box;margin-bottom:12px"></p>
+<p><input id="email" type="email" placeholder="メールアドレス（必須）" style="width:100%;padding:8px;box-sizing:border-box;margin-bottom:12px"></p>
 <p><button id="go" style="padding:10px 24px;font-size:16px">お申し込みへ進む</button>
 <button id="free" style="padding:10px 24px;font-size:16px;background:#0a7d32;color:#fff;border:none">無料で始める（10サイトまで・カード不要）</button></p>
 <p id="err" style="color:#c00"></p>
@@ -38,19 +38,21 @@ document.getElementById('go').addEventListener('click',async function(){
   }
 });
 document.getElementById('free').addEventListener('click',async function(){
-  var btn=this;btn.disabled=true;document.getElementById('err').textContent='';
+  var btn=this;var err=document.getElementById('err');btn.disabled=true;err.textContent='';err.style.color='#c00';
+  var olddl=document.getElementById('dl-link');if(olddl)olddl.remove();
+  var email=document.getElementById('email').value.trim();
+  if(!email){err.textContent='メールアドレスを入力してください';btn.disabled=false;return;}
+  if(!/^[^@\s]{1,64}@[^@\s]{1,190}\.[^@\s]{2,24}$/.test(email)){err.textContent='メールアドレスの形式が正しくありません';btn.disabled=false;return;}
   try{
-    var email=document.getElementById('email').value;
-    var res=await fetch('/v1/signup/free',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(email?{email:email}:{})});
+    var res=await fetch('/v1/signup/free',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:email})});
     var data=await res.json();
     if(!res.ok||!data.hub_token)throw new Error('failed');
-    document.getElementById('err').style.color='#0a7d32';
-    document.getElementById('err').style.color='#0a7d32';
-document.getElementById('err').textContent='拠点トークンを発行しました（案内メールも送信しました）。次に プラグイン（ZIP）をダウンロードして WordPress にインストールし、「利用数と料金」画面に中央サーバーURLとトークンを入力してください。';
-var dl=document.createElement('a');dl.href='https://raw.githubusercontent.com/masa45594-crypto/autorepair-central/main/autorepair-ai-hosting-beta-0.20.54-install.zip';dl.textContent='プラグイン（ZIP）をダウンロード';dl.style.display='inline-block';dl.style.marginTop='8px';document.getElementById('err').after(dl);
-
+    err.style.color='#0a7d32';
+    err.textContent=data.email_delivered?'拠点トークンを発行しました（案内メールも送信しました）。次に プラグイン（ZIP）をダウンロードして WordPress にインストールし、「利用数と料金」画面に中央サーバーURLとトークンを入力してください。':'拠点トークンを発行しました。案内メールの送信に失敗したため、下のリンクからプラグイン（ZIP）をダウンロードして WordPress にインストールし、「利用数と料金」画面に中央サーバーURLとトークンを入力してください。';
+    var dl=document.createElement('a');dl.id='dl-link';dl.href='https://raw.githubusercontent.com/masa45594-crypto/autorepair-central/main/autorepair-ai-hosting-beta-0.20.54-install.zip';dl.textContent='プラグイン（ZIP）をダウンロード';dl.style.display='inline-block';dl.style.marginTop='8px';err.after(dl);
   }catch(e){
-    document.getElementById('err').textContent='発行できませんでした。しばらくしてから再度お試しください。';
+    err.style.color='#c00';
+    err.textContent='発行できませんでした。しばらくしてから再度お試しください。';
     btn.disabled=false;
   }
 });
@@ -1252,7 +1254,9 @@ def handler(store):
                     body=json.loads(self.rfile.read(size)) if size else {}
                     if not isinstance(body,dict):raise Invalid('expected an object')
                     email=body.get('email')
-                    if email is not None and (not isinstance(email,str) or not re.fullmatch(r'[^@\s]{1,64}@[^@\s]{1,190}\.[^@\s]{2,24}',email)):raise Invalid('invalid email')
+                    # Email is required on the free path: the token is delivered by mail,
+                    # so a request without a valid address must not provision a hub.
+                    if not isinstance(email,str) or not re.fullmatch(r'[^@\s]{1,64}@[^@\s]{1,190}\.[^@\s]{2,24}',email):raise Invalid('email required')
                     account='acct-'+secrets.token_hex(8);hub='hub-'+secrets.token_hex(8)
                     token=store.provision(account,hub,price_base_usd_cents(),price_unit_usd_cents())
                     delivered=False
